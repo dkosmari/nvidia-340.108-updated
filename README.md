@@ -15,7 +15,7 @@ the NVIDIA website if necessary.
 Installation
 ------------
 
-    git clone https://github.com/dkosmari/nvidia-340.108-updated
+    git clone https://github.com/dkosmari/nvidia-340.108-updated.git
     cd nvidia-340.108-updated
     ./apply-patch.sh # this will download NVIDIA-Linux-x86_64-340.108.run
 
