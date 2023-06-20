@@ -1,0 +1,15 @@
+syntax: glob
+
+*.cmd
+*.ko
+*.log
+*.mod
+*.mod.c
+*.o
+*.o_shipped
+*.run
+*~
+Module.symvers
+modules.order
+*.c
+*.h

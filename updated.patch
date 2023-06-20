@@ -1,0 +1,2270 @@
+diff --recursive --unified --new-file original/nv-acpi.c updated/nv-acpi.c
+--- original/nv-acpi.c	2023-06-20 07:10:08.234281986 -0300
++++ updated/nv-acpi.c	2023-06-20 07:10:09.772311654 -0300
+@@ -26,8 +26,12 @@
+ #if !defined(NV_ACPI_DEVICE_OPS_REMOVE_ARGUMENT_COUNT) || (NV_ACPI_DEVICE_OPS_REMOVE_ARGUMENT_COUNT == 2)
+ static int         nv_acpi_remove_two_args(struct acpi_device *device, int type);
+ #else
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0)
++static void        nv_acpi_remove_one_arg(struct acpi_device *device);
++#else
+ static int         nv_acpi_remove_one_arg(struct acpi_device *device);
+ #endif
++#endif
+ 
+ static void        nv_acpi_event           (acpi_handle, u32, void *);
+ static acpi_status nv_acpi_find_methods    (acpi_handle, u32, void *, void **);
+@@ -178,6 +182,54 @@
+     return 0;
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
++struct nv_acpi_add_enumerated_data {
++	nv_acpi_t *object;
++	int *counter;
++};
++
++static int nv_acpi_add_enumerated(struct acpi_device *dev, void *data)
++{
++    struct nv_acpi_add_enumerated_data *rcvd_data = data;
++    nv_acpi_t *pNvAcpiObject = rcvd_data->object;
++    int *device_counter = rcvd_data->counter;
++    acpi_status status = -1;
++    nv_acpi_integer_t device_id = 0;
++    if (!dev)
++        return 0;
++    if (*device_counter == NV_MAXNUM_DISPLAY_DEVICES) {
++        nv_printf(NV_DBG_ERRORS, 
++            "NVRM: nv_acpi_add: Total number of devices cannot exceed %d\n", 
++            NV_MAXNUM_DISPLAY_DEVICES);
++        return 1;
++    }
++    status =
++        acpi_evaluate_integer(dev->handle, "_ADR", NULL, &device_id);
++    if (ACPI_FAILURE(status))
++        /* Couldnt query device_id for this device */
++        return 0;
++
++    device_id = (device_id & 0xffff);
++
++    if ((device_id != 0x100) && /* Not a known CRT device-id */ 
++        (device_id != 0x200) && /* Not a known TV device-id */ 
++        (device_id != 0x0110) && (device_id != 0x0118) && (device_id != 0x0400) && /* Not an LCD*/
++        (device_id != 0x0111) && (device_id != 0x0120) && (device_id != 0x0300)) /* Not a known DVI device-id */ 
++    {
++        /* This isnt a known device Id. 
++           Do default switching on this system. */
++        pNvAcpiObject->default_display_mask = 1;
++        return 1;
++    }
++
++    pNvAcpiObject->pNvVideo[*device_counter].dev_id = device_id;
++    pNvAcpiObject->pNvVideo[*device_counter].dev_handle = dev->handle;
++
++    (*device_counter)++;
++    return 0;
++}
++#endif
++
+ static int nv_acpi_add(struct acpi_device *device)
+ {
+     /*
+@@ -190,8 +242,10 @@
+     union acpi_object control_argument_0 = { ACPI_TYPE_INTEGER };
+     struct acpi_object_list control_argument_list = { 0, NULL };
+     nv_stack_t *sp = NULL;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 0, 0)
+     struct list_head *node, *next;
+     nv_acpi_integer_t device_id = 0;
++#endif
+     int device_counter = 0;
+ 
+     NV_KMEM_CACHE_ALLOC_STACK(sp);
+@@ -220,6 +274,7 @@
+ 
+     // grab handles to all the important nodes representing devices
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 0, 0)
+     list_for_each_safe(node, next, &device->children) 
+     {
+         struct acpi_device *dev =
+@@ -261,6 +316,15 @@
+         device_counter++;
+ 
+     }
++#else
++    {        
++        struct nv_acpi_add_enumerated_data data = {
++            .object = pNvAcpiObject,
++            .counter = &device_counter,
++        };
++        acpi_dev_for_each_child(device, nv_acpi_add_enumerated, &data);
++    }
++#endif
+ 
+     // arg 0, bits 1:0, 0 = enable events
+     control_argument_0.integer.type = ACPI_TYPE_INTEGER;
+@@ -299,8 +363,12 @@
+ #if !defined(NV_ACPI_DEVICE_OPS_REMOVE_ARGUMENT_COUNT) || (NV_ACPI_DEVICE_OPS_REMOVE_ARGUMENT_COUNT == 2)
+ static int nv_acpi_remove_two_args(struct acpi_device *device, int type)
+ #else
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0)
++static void nv_acpi_remove_one_arg(struct acpi_device *device)
++#else
+ static int nv_acpi_remove_one_arg(struct acpi_device *device)
+ #endif
++#endif
+ {
+     /*
+      * This function will cause RM to relinquish control of the VGA ACPI device.
+@@ -350,7 +418,9 @@
+         device->driver_data = NULL;
+     }
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
+     return status;
++#endif
+ }
+ 
+ static void nv_acpi_event(acpi_handle handle, u32 event_type, void *data)
+@@ -577,9 +647,13 @@
+         {
+             if (!nvif_parent_gpu_handle) /* unknown error */
+                 break;
+-            
+-            retVal = acpi_bus_get_device(nvif_parent_gpu_handle, &device);
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
++            device = acpi_fetch_acpi_dev(nvif_parent_gpu_handle);
++            retVal = 0;
++#else
++            retVal = acpi_bus_get_device(nvif_parent_gpu_handle, &device);
++#endif
+             if (ACPI_FAILURE(retVal) || !device)
+                 break;
+ 
+@@ -652,8 +726,11 @@
+     if (nvif_parent_gpu_handle == NULL) 
+         return;
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
++    device = acpi_fetch_acpi_dev(nvif_parent_gpu_handle);
++#else
+     acpi_bus_get_device(nvif_parent_gpu_handle, &device);
+-
++#endif
+     nv_uninstall_notifier(device, nv_acpi_event);
+     nvif_parent_gpu_handle = NULL;
+ 
+@@ -1185,6 +1262,31 @@
+     return status;
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
++static int nv_acpi_ddc_method_enumerated(struct acpi_device *dev, void *data)
++{
++    acpi_handle *lcd_dev_handle = data;
++    acpi_status status;
++    nv_acpi_integer_t device_id = 0;
++    if (!dev)
++        return 0;
++    status = acpi_evaluate_integer(dev->handle, "_ADR", NULL, &device_id);
++    if (ACPI_FAILURE(status))
++        /* Couldnt query device_id for this device */
++        return 0;
++
++    device_id = (device_id & 0xffff);
++
++    if ((device_id == 0x0110) || (device_id == 0x0118) || (device_id == 0x0400)) /* Only for an LCD*/
++    {
++        *lcd_dev_handle = dev->handle;
++        nv_printf(NV_DBG_INFO, "NVRM: %s Found LCD: %x\n", __FUNCTION__, device_id);
++        return 1;
++    }
++    return 0;
++}
++#endif
++
+ /*
+  * This function executes a _DDC ACPI method.
+  */
+@@ -1200,8 +1302,10 @@
+     union acpi_object *ddc;
+     union acpi_object ddc_arg0 = { ACPI_TYPE_INTEGER };
+     struct acpi_object_list input = { 1, &ddc_arg0 };
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 0, 0)
+     struct list_head *node, *next;
+     nv_acpi_integer_t device_id = 0;
++#endif
+     NvU32 i;
+     acpi_handle dev_handle  = NULL;
+     acpi_handle lcd_dev_handle  = NULL;
+@@ -1212,7 +1316,12 @@
+     if (!dev_handle)
+         return RM_ERR_INVALID_ARGUMENT;
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
++    device = acpi_fetch_acpi_dev(dev_handle);
++    status = 0;
++#else
+     status = acpi_bus_get_device(dev_handle, &device);
++#endif
+ 
+     if (ACPI_FAILURE(status) || !device)
+         return RM_ERR_INVALID_ARGUMENT;
+@@ -1227,6 +1336,7 @@
+         return RM_ERR_NOT_SUPPORTED;
+     }
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 0, 0)
+     list_for_each_safe(node, next, &device->children) 
+     {
+         struct acpi_device *dev =
+@@ -1250,6 +1360,9 @@
+         }
+ 
+     }
++#else
++    acpi_dev_for_each_child(device, nv_acpi_ddc_method_enumerated, &lcd_dev_handle);
++#endif
+ 
+     if (lcd_dev_handle == NULL)
+     {
+diff --recursive --unified --new-file original/nv.c updated/nv.c
+--- original/nv.c	2023-06-20 07:10:08.237282044 -0300
++++ updated/nv.c	2023-06-20 07:10:09.792312039 -0300
+@@ -20,9 +20,7 @@
+ #include "nv_uvm_interface.h"
+ #endif
+ 
+-#if !defined(NV_VMWARE)
+ #include "nv-frontend.h"
+-#endif
+ 
+ /* 
+  * The module information macros for Linux single-module builds
+@@ -31,7 +29,7 @@
+ 
+ #if defined(NV_VMWARE) || (NV_BUILD_MODULE_INSTANCES != 0)
+ #if defined(MODULE_LICENSE)
+-MODULE_LICENSE("NVIDIA");
++MODULE_LICENSE("GPL");
+ #endif
+ #if defined(MODULE_INFO)
+ MODULE_INFO(supported, "external");
+@@ -44,7 +42,7 @@
+ #endif
+ #endif
+ 
+-#include "conftest/patches.h"
++#include "nvidia-config.h"
+ 
+ /*
+  * our global state; one per device
+@@ -325,7 +323,9 @@
+ static int           nvidia_close          (struct inode *, struct file *);
+ static unsigned int  nvidia_poll           (struct file *, poll_table *);
+ static int           nvidia_ioctl          (struct inode *, struct file *, unsigned int, unsigned long);
++#if defined(NV_VMWARE) && defined(NV_FILE_OPERATIONS_HAS_UNLOCKED_IOCTL)
+ static long          nvidia_unlocked_ioctl (struct file *, unsigned int, unsigned long);
++#endif
+ static void          nvidia_isr_bh         (unsigned long);
+ #if !defined(NV_IRQ_HANDLER_T_PRESENT) || (NV_IRQ_HANDLER_T_ARGUMENT_COUNT == 3)
+ static irqreturn_t   nvidia_isr            (int, void *, struct pt_regs *);
+@@ -710,7 +710,7 @@
+ {
+     RM_STATUS status;
+     int rc;
+-    NvU32 count, data, i;
++    NvU32 count, data;
+     nv_state_t *nv = NV_STATE_PTR(&nv_ctl_device);
+     nv_stack_t *sp = NULL;
+     nv_linux_state_t *nvl;
+@@ -736,7 +736,7 @@
+         goto failed4;
+     }
+ 
+-#if defined(NV_LINUX_NVMAP_H_PRESENT) && defined(HAVE_NV_ANDROID)
++#if defined(HAVE_NV_ANDROID)
+     status = nv_nvmap_create_client();
+     if (RM_OK != status)
+     {
+@@ -752,7 +752,7 @@
+     NV_SPIN_LOCK_INIT(&km_lock);
+ #endif
+ 
+-    NV_KMEM_CACHE_CREATE(nv_stack_t_cache, NV_STACK_CACHE_STR, nv_stack_t);
++    NV_KMEM_CACHE_CREATE_USERCOPY(nv_stack_t_cache, NV_STACK_CACHE_STR, nv_stack_t);
+     if (nv_stack_t_cache == NULL)
+     {
+         nv_printf(NV_DBG_ERRORS, "NVRM: stack cache allocation failed!\n");
+@@ -874,7 +874,8 @@
+ 
+     nv_printf(NV_DBG_ERRORS, "NVRM: loading %s\n", pNVRM_ID);
+ 
+-    for (i = 0; __nv_patches[i].short_description; i++)
++#ifdef NV_ENABLE_PATCHES
++    for (int i = 0; __nv_patches[i].short_description; i++)
+     {
+         if (i == 0)
+             nv_printf(NV_DBG_ERRORS, "NVRM: Applied patches:\n");
+@@ -883,6 +884,7 @@
+         nv_printf(NV_DBG_ERRORS,
+             "NVRM:    Patch #%d: %s\n", i + 1, __nv_patches[i].short_description);
+     }
++#endif
+ 
+     // init the nvidia control device
+     nv->os_state = (void *) &nv_ctl_device;
+@@ -1092,7 +1094,7 @@
+ 
+     nv_unregister_chrdev((void *)&nv_fops);
+ 
+-#if defined(NV_LINUX_NVMAP_H_PRESENT) && defined(HAVE_NV_ANDROID)
++#if defined(HAVE_NV_ANDROID)
+     nv_nvmap_destroy_client();
+ #endif
+     // Shutdown the resource manager
+@@ -1830,6 +1832,7 @@
+     return status;
+ }
+ 
++#if defined(NV_VMWARE) && defined(NV_FILE_OPERATIONS_HAS_UNLOCKED_IOCTL)
+ static long
+ nvidia_unlocked_ioctl(
+     struct file *file,
+@@ -1839,6 +1842,7 @@
+ {
+     return nvidia_ioctl(NV_FILE_INODE(file), file, cmd, i_arg);
+ }
++#endif
+ 
+ /*
+  * driver receives an interrupt
+@@ -1910,6 +1914,7 @@
+     _nvidia_rc_timer_internal(nvl);
+ }
+ 
++#ifndef NV_TIMER_SETUP_PRESENT
+ static void
+ nvidia_rc_timer_with_anon_data(
+     unsigned long data
+@@ -1918,6 +1923,7 @@
+     nv_linux_state_t *nvl = (nv_linux_state_t *) data;
+     _nvidia_rc_timer_internal(nvl);
+ }
++#endif
+ 
+ /*
+ ** nvidia_ctl_open
+@@ -2785,8 +2791,12 @@
+ 
+ #if defined(CONFIG_VGA_ARB)
+ #if defined(VGA_DEFAULT_DEVICE)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
++    vga_get(VGA_DEFAULT_DEVICE, VGA_RSRC_LEGACY_MASK, 0);
++#else
+     vga_tryget(VGA_DEFAULT_DEVICE, VGA_RSRC_LEGACY_MASK);
+ #endif
++#endif
+     vga_set_legacy_decoding(dev, VGA_RSRC_NONE);
+ #endif
+ 
+diff --recursive --unified --new-file original/nv-dma.c updated/nv-dma.c
+--- original/nv-dma.c	2023-06-20 07:10:08.246282218 -0300
++++ updated/nv-dma.c	2023-06-20 07:10:09.814312463 -0300
+@@ -14,6 +14,7 @@
+ #include "os-interface.h"
+ #include "nv-linux.h"
+ 
++#ifndef NV_SG_ALLOC_TABLE_FROM_PAGES_PRESENT
+ static void nv_fill_scatterlist
+ (
+     struct scatterlist *sgl,
+@@ -38,6 +39,7 @@
+     }
+ #endif
+ }
++#endif
+ 
+ RM_STATUS nv_create_dma_map_scatterlist(nv_dma_map_t *dma_map)
+ {
+@@ -136,10 +138,17 @@
+         return status;
+     }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
++    dma_map->sg_map_count = dma_map_sg(&dma_map->dev->dev,
++            NV_DMA_MAP_SCATTERLIST(dma_map),
++            NV_DMA_MAP_SCATTERLIST_LENGTH(dma_map),
++            DMA_BIDIRECTIONAL);
++#else
+     dma_map->sg_map_count = pci_map_sg(dma_map->dev,
+             NV_DMA_MAP_SCATTERLIST(dma_map),
+             NV_DMA_MAP_SCATTERLIST_LENGTH(dma_map),
+             PCI_DMA_BIDIRECTIONAL);
++#endif
+     if (dma_map->sg_map_count == 0)
+     {
+         nv_printf(NV_DBG_ERRORS,
+@@ -211,8 +220,13 @@
+ 
+     if (dma_map->sg_map_count != 0)
+     {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
++        dma_unmap_sg(&dma_map->dev->dev, NV_DMA_MAP_SCATTERLIST(dma_map),
++                NV_DMA_MAP_SCATTERLIST_LENGTH(dma_map), DMA_BIDIRECTIONAL);
++#else
+         pci_unmap_sg(dma_map->dev, NV_DMA_MAP_SCATTERLIST(dma_map),
+                 NV_DMA_MAP_SCATTERLIST_LENGTH(dma_map), PCI_DMA_BIDIRECTIONAL);
++#endif
+     }
+ 
+     *priv = dma_map->user_pages;
+diff --recursive --unified --new-file original/nv-drm.c updated/nv-drm.c
+--- original/nv-drm.c	2023-06-20 07:10:08.249282275 -0300
++++ updated/nv-drm.c	2023-06-20 07:10:09.835312869 -0300
+@@ -16,43 +16,298 @@
+ 
+ #if defined(NV_DRM_AVAILABLE)
+ 
+-#if defined(NV_DRM_DRMP_H_PRESENT)
+-#include <drm/drmP.h>
+-#endif
+-#if defined(NV_LINUX_FILE_H_PRESENT)
+ #include <linux/file.h>
+-#endif
+ 
+-#if defined(NV_DRM_DRM_DRV_H_PRESENT)
+ #include <drm/drm_drv.h>
+-#endif
+-
+-#if defined(NV_DRM_DRM_PRIME_H_PRESENT)
+ #include <drm/drm_prime.h>
+-#endif
+-
+-#if defined(NV_DRM_DRM_FILE_H_PRESENT)
+ #include <drm/drm_file.h>
++#include <drm/drm_ioctl.h>
++#include <drm/drm_gem.h>
++
++/* Note: the code seems broken, so it's better to not use it. */
++#if defined(NV_DRM_LEGACY_PCI_INIT_PRESENT) && 0
++#  define nv_drm_pci_init drm_legacy_pci_init
++#  define nv_drm_pci_exit drm_legacy_pci_exit
++#elif defined(NV_DRM_PCI_INIT_PRESENT)
++#  define nv_drm_pci_init drm_pci_init
++#  define nv_drm_pci_exit drm_pci_exit
++#else
++#  if defined(NV_DRM_GET_PCI_DEV_PRESENT)
++#    define nv_drm_get_pci_dev drm_get_pci_dev
++#  else
++#    if LINUX_VERSION_CODE < KERNEL_VERSION(5, 14, 0)
++#      include <drm/drm_agpsupport.h>
++#    else
++#      include <drm/drm_legacy.h>
++#    endif
++#    include "linux/dma-buf.h"
++
++struct nv_drm_agp_head {
++    struct agp_kern_info agp_info;
++    struct list_head memory;
++    unsigned long mode;
++    struct agp_bridge_data *bridge;
++    int enabled;
++    int acquired;
++    unsigned long base;
++    int agp_mtrr;
++    int cant_use_aperture;
++    unsigned long page_mask;
++};
++
++struct nv_drm_agp_mem {
++    unsigned long handle;
++    struct agp_memory *memory;
++    unsigned long bound;
++    int pages;
++    struct list_head head;
++};
++
++struct nv_drm_extra_priv_data {
++    struct pci_dev *pdev;
++    struct drm_agp_head *agp;
++};
++
++/*
++ * Code from drm_agp_init/nv_drm_{free,unbind}_agp
++ * Extracted from commit: 5b8b9d0c6d0e0f1993c6c56deaf9646942c49d94, file: drivers/gpu/drm/drm_agpsupport.c
++ */
++struct drm_agp_head *nv_drm_agp_init(struct drm_device *dev)
++{
++    struct nv_drm_agp_head *head = NULL;
++    struct nv_drm_extra_priv_data *extra = dev->dev_private;
++
++    head = kzalloc(sizeof(*head), GFP_KERNEL);
++    if (!head)
++        return NULL;
++    head->bridge = agp_find_bridge(extra->pdev);
++    if (!head->bridge) {
++        head->bridge = agp_backend_acquire(extra->pdev);
++        if (!head->bridge) {
++            kfree(head);
++            return NULL;
++        }
++        agp_copy_info(head->bridge, &head->agp_info);
++        agp_backend_release(head->bridge);
++    } else {
++        agp_copy_info(head->bridge, &head->agp_info);
++    }
++    if (head->agp_info.chipset == NOT_SUPPORTED) {
++        kfree(head);
++        return NULL;
++    }
++    INIT_LIST_HEAD(&head->memory);
++    head->cant_use_aperture = head->agp_info.cant_use_aperture;
++    head->page_mask = head->agp_info.page_mask;
++    head->base = head->agp_info.aper_base;
++    return (struct drm_agp_head *)head;
++}
++
++void nv_drm_free_agp(struct agp_memory *handle, int pages)
++{
++    agp_free_memory(handle);
++}
++
++int nv_drm_unbind_agp(struct agp_memory *handle)
++{
++    return agp_unbind_memory(handle);
++}
++
++/*
++ * Code from drm_pci_agp_{clear,destroy,init}/drm_get_pci_dev
++ * Extracted from commit: 5b8b9d0c6d0e0f1993c6c56deaf9646942c49d94, file: drivers/gpu/drm/drm_pci.c
++ */
++static void nv_drm_pci_agp_init(struct drm_device *dev)
++{
++    if (drm_core_check_feature(dev, DRIVER_USE_AGP)) {
++        struct nv_drm_extra_priv_data *extra = dev->dev_private;
++
++        if (pci_find_capability(extra->pdev, PCI_CAP_ID_AGP))
++            extra->agp = nv_drm_agp_init(dev);
++        if (extra->agp) {
++            extra->agp->agp_mtrr = arch_phys_wc_add(
++                extra->agp->agp_info.aper_base,
++                extra->agp->agp_info.aper_size *
++                1024 * 1024);
++        }
++    }
++}
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 14, 0)
++
++#else
++/* copied from v5.14.5 */
++int nv_drm_legacy_agp_release(struct drm_device *dev)
++{
++    struct nv_drm_extra_priv_data *extra = dev->dev_private;
++
++    if (!extra->agp || !extra->agp->acquired)
++        return -EINVAL;
++    agp_backend_release(extra->agp->bridge);
++    extra->agp->acquired = 0;
++    return 0;
++}
+ #endif
+ 
+-#if defined(NV_DRM_DRM_IOCTL_H_PRESENT)
+-#include <drm/drm_ioctl.h>
++void nv_drm_legacy_agp_clear(struct drm_device *dev)
++{
++    struct nv_drm_agp_mem *entry, *tempe;
++    struct nv_drm_extra_priv_data *extra = dev->dev_private;
++
++    if (!extra->agp)
++        return;
++    if (!drm_core_check_feature(dev, DRIVER_LEGACY))
++        return;
++
++    list_for_each_entry_safe(entry, tempe, &extra->agp->memory, head) {
++        if (entry->bound)
++            nv_drm_unbind_agp(entry->memory);
++        nv_drm_free_agp(entry->memory, entry->pages);
++        kfree(entry);
++    }
++    INIT_LIST_HEAD(&extra->agp->memory);
++
++    if (extra->agp->acquired)
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 14, 0)
++        drm_agp_release(dev);
++#else
++        nv_drm_legacy_agp_release(dev);
+ #endif
++    extra->agp->acquired = 0;
++    extra->agp->enabled = 0;
++}
++
++void nv_drm_pci_agp_destroy(struct drm_device *dev)
++{
++    struct nv_drm_extra_priv_data *extra = dev->dev_private;
++    if (extra->agp) {
++        arch_phys_wc_del(extra->agp->agp_mtrr);
++        nv_drm_legacy_agp_clear(dev);
++        kfree(extra->agp);
++        extra->agp = NULL;
++    }
++}
++
++static int nv_drm_get_pci_dev(struct pci_dev *pdev,
++               const struct pci_device_id *ent,
++               struct drm_driver *driver)
++{
++    struct drm_device *dev;
++    struct nv_drm_extra_priv_data *extra;
++    int ret;
+ 
+-#if defined(NV_DRM_DRM_PCI_H_PRESENT)
+-#include <drm/drm_pci.h>
++    DRM_DEBUG("\n");
++
++    dev = drm_dev_alloc(driver, &pdev->dev);
++    if (IS_ERR(dev))
++        return PTR_ERR(dev);
++
++    extra = kzalloc(sizeof(*extra), GFP_KERNEL);
++    if (IS_ERR(extra))
++        goto err_free;
++
++    extra->pdev = pdev;
++
++    ret = pci_enable_device(pdev);
++    if (ret)
++        goto err_free2;
++
++    /* use the not used (i hope) dev_private to store deprecated/legacy pointers */
++    dev->dev_private = extra;
++#ifdef __alpha__
++    dev->hose = pdev->sysdata;
+ #endif
+ 
+-#if defined(NV_DRM_DRM_GEM_H_PRESENT)
+-#include <drm/drm_gem.h>
++    if (drm_core_check_feature(dev, DRIVER_MODESET))
++        pci_set_drvdata(pdev, dev);
++
++    nv_drm_pci_agp_init(dev);
++
++    ret = drm_dev_register(dev, ent->driver_data);
++    if (ret)
++        goto err_agp;
++
++    /* No locking needed since shadow-attach is single-threaded since it may
++     * only be called from the per-driver module init hook. */
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 10, 0)
++    if (drm_core_check_feature(dev, DRIVER_LEGACY))
++        list_add_tail(&dev->legacy_dev_list, &driver->legacy_dev_list);
++#endif
++
++    return 0;
++
++err_agp:
++    nv_drm_pci_agp_destroy(dev);
++    pci_disable_device(pdev);
++err_free2:
++    kfree(extra);
++err_free:
++    drm_dev_put(dev);
++    return ret;
++}
+ #endif
+ 
+-#if defined(NV_DRM_LEGACY_PCI_INIT_PRESENT)
+-#define nv_drm_pci_init drm_legacy_pci_init
+-#define nv_drm_pci_exit drm_legacy_pci_exit
+-#else
+-#define nv_drm_pci_init drm_pci_init
+-#define nv_drm_pci_exit drm_pci_exit
++/*
++ * Code from drm_legacy_pci_{init,exit}
++ * Extracted from tag: v5.6.3, file: drivers/gpu/drm/drm_pci.c
++ */
++int nv_drm_pci_init(struct drm_driver *driver, struct pci_driver *pdriver)
++{
++    struct pci_dev *pdev = NULL;
++    const struct pci_device_id *pid;
++    int i;
++
++    DRM_DEBUG("\n");
++
++    if (WARN_ON(!(driver->driver_features & DRIVER_LEGACY)))
++        return -EINVAL;
++
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 10, 0)
++    /* If not using KMS, fall back to stealth mode manual scanning. */
++    INIT_LIST_HEAD(&driver->legacy_dev_list);
++#endif
++    for (i = 0; pdriver->id_table[i].vendor != 0; i++) {
++        pid = &pdriver->id_table[i];
++
++        /* Loop around setting up a DRM device for each PCI device
++         * matching our ID and device class.  If we had the internal
++         * function that pci_get_subsys and pci_get_class used, we'd
++         * be able to just pass pid in instead of doing a two-stage
++         * thing.
++         */
++        pdev = NULL;
++        while ((pdev =
++            pci_get_subsys(pid->vendor, pid->device, pid->subvendor,
++                       pid->subdevice, pdev)) != NULL) {
++            if ((pdev->class & pid->class_mask) != pid->class)
++                continue;
++
++            /* stealth mode requires a manual probe */
++            pci_dev_get(pdev);
++            nv_drm_get_pci_dev(pdev, pid, driver);
++        }
++    }
++    return 0;
++}
++
++void nv_drm_pci_exit(struct drm_driver *driver, struct pci_driver *pdriver)
++{
++    DRM_DEBUG("\n");
++
++    if (!(driver->driver_features & DRIVER_LEGACY)) {
++        WARN_ON(1);
++    } else {
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 10, 0)
++        struct drm_device *dev, *tmp;
++        list_for_each_entry_safe(dev, tmp, &driver->legacy_dev_list,
++                     legacy_dev_list) {
++            list_del(&dev->legacy_dev_list);
++            drm_put_dev(dev);
++        }
++#endif
++    }
++    DRM_INFO("Module unloaded\n");
++}
+ #endif
+ 
+ extern nv_linux_state_t *nv_linux_devices;
+@@ -68,10 +323,11 @@
+ )
+ {
+     nv_linux_state_t *nvl;
++    struct nv_drm_extra_priv_data *extra = dev->dev_private;
+ 
+     for (nvl = nv_linux_devices; nvl != NULL; nvl = nvl->next)
+     {
+-        if (nvl->dev == dev->pdev)
++        if (nvl->dev == extra->pdev)
+         {
+             nvl->drm = dev;
+             return 0;
+@@ -92,10 +348,11 @@
+ )
+ {
+     nv_linux_state_t *nvl;
++    struct nv_drm_extra_priv_data *extra = dev->dev_private;
+ 
+     for (nvl = nv_linux_devices; nvl != NULL; nvl = nvl->next)
+     {
+-        if (nvl->dev == dev->pdev)
++        if (nvl->dev == extra->pdev)
+         {
+             BUG_ON(nvl->drm != dev);
+             nvl->drm = NULL;
+@@ -123,6 +380,19 @@
+ }
+ #endif
+ 
++static const struct file_operations nv_drm_fops = {
++    .owner = THIS_MODULE,
++    .open = drm_open,
++    .release = drm_release,
++    .unlocked_ioctl = drm_ioctl,
++    .mmap = drm_gem_mmap,
++    .poll = drm_poll,
++    .read = drm_read,
++    .llseek = noop_llseek,
++};
++
++/* Seems to be all dead code. */
++#if 0
+ static void nv_gem_free(
+     struct drm_gem_object *obj
+ )
+@@ -137,8 +407,11 @@
+ {
+     struct nv_gem_object *nv_obj = container_of(obj, struct nv_gem_object, base);
+     int page_count = obj->size >> PAGE_SHIFT;
+-
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
++    return drm_prime_pages_to_sg(obj->dev, nv_obj->pages, page_count);
++#else
+     return drm_prime_pages_to_sg(nv_obj->pages, page_count);
++#endif
+ }
+ 
+ static void* nv_gem_prime_vmap(
+@@ -159,16 +432,51 @@
+     vunmap(virtual);
+ }
+ 
+-static const struct file_operations nv_drm_fops = {
+-    .owner = THIS_MODULE,
+-    .open = drm_open,
+-    .release = drm_release,
+-    .unlocked_ioctl = drm_ioctl,
+-    .mmap = drm_gem_mmap,
+-    .poll = drm_poll,
+-    .read = drm_read,
+-    .llseek = noop_llseek,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
++struct sg_table *nv_drm_gem_prime_get_sg_table(struct drm_gem_object *gem)
++{
++    return nv_gem_prime_get_sg_table(gem);
++}
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
++static int nv_drm_gem_vmap(struct drm_gem_object *gem,
++                           struct iosys_map *map)
++{
++#else
++static int nv_drm_gem_vmap(struct drm_gem_object *gem,
++                           struct dma_buf_map *map)
++{
++#endif
++    map->vaddr = nv_gem_prime_vmap(gem);
++    if (map->vaddr == NULL) {
++        return -ENOMEM;
++    }
++    map->is_iomem = true;
++    return 0;
++}
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
++static void nv_drm_gem_vunmap(struct drm_gem_object *gem,
++                              struct iosys_map *map)
++{
++#else
++static void nv_drm_gem_vunmap(struct drm_gem_object *gem,
++                              struct dma_buf_map *map)
++{
++#endif
++    nv_gem_prime_vunmap(gem, map->vaddr);
++    map->vaddr = NULL;
++}
++
++static struct drm_gem_object_funcs nv_drm_gem_object_funcs = {
++  .free = nv_gem_free,
++  .export = drm_gem_prime_export,
++  .get_sg_table = nv_drm_gem_prime_get_sg_table,
++  .vmap = nv_drm_gem_vmap,
++  .vunmap = nv_drm_gem_vunmap,
+ };
++#endif
++#endif
+ 
+ static struct drm_driver nv_drm_driver = {
+ 
+@@ -188,13 +496,19 @@
+     .set_busid = drm_pci_set_busid,
+ #endif
+ 
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 8, 0)
+     .gem_free_object = nv_gem_free,
++#elif LINUX_VERSION_CODE <= KERNEL_VERSION(5, 10, 0)
++    .gem_free_object_unlocked = nv_gem_free,
++#endif
+ 
+     .prime_handle_to_fd = drm_gem_prime_handle_to_fd,
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(5, 10, 0)
+     .gem_prime_export = drm_gem_prime_export,
+     .gem_prime_get_sg_table = nv_gem_prime_get_sg_table,
+     .gem_prime_vmap = nv_gem_prime_vmap,
+     .gem_prime_vunmap = nv_gem_prime_vunmap,
++#endif
+ 
+     .name = "nvidia-drm",
+     .desc = "NVIDIA DRM driver",
+@@ -285,8 +599,14 @@
+ #if defined(NV_DRM_GEM_OBJECT_PUT_UNLOCKED_PRESENT)
+     drm_gem_object_put_unlocked(&nv_obj->base);
+ #else
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
++    drm_gem_object_put(&nv_obj->base);
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
++    drm_gem_object_put_locked(&nv_obj->base);
++#else
+     drm_gem_object_unreference_unlocked(&nv_obj->base);
+ #endif
++#endif
+ 
+     status = RM_OK;
+ 
+diff --recursive --unified --new-file original/nv-frontend.c updated/nv-frontend.c
+--- original/nv-frontend.c	2023-06-20 07:10:08.251282314 -0300
++++ updated/nv-frontend.c	2023-06-20 07:10:09.843313023 -0300
+@@ -15,7 +15,7 @@
+ #include "nv-frontend.h"
+ 
+ #if defined(MODULE_LICENSE)
+-MODULE_LICENSE("NVIDIA");
++MODULE_LICENSE("GPL");
+ #endif
+ #if defined(MODULE_INFO)
+ MODULE_INFO(supported, "external");
+diff --recursive --unified --new-file original/nv.h updated/nv.h
+--- original/nv.h	2023-06-20 07:10:08.190281137 -0300
++++ updated/nv.h	2023-06-20 07:10:09.490306214 -0300
+@@ -13,7 +13,12 @@
+ #define _NV_H_
+ 
+ #include <nvtypes.h>
++#include <linux/version.h>
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
++#include <linux/stdarg.h>
++#else
+ #include <stdarg.h>
++#endif
+ 
+ #if !defined(NV_MIN)
+ #define NV_MIN(_a,_b) ((_a) < (_b) ? (_a) : (_b))
+diff --recursive --unified --new-file original/nvidia-config.h updated/nvidia-config.h
+--- original/nvidia-config.h	1969-12-31 21:00:00.000000000 -0300
++++ updated/nvidia-config.h	2023-06-20 07:10:09.501306426 -0300
+@@ -0,0 +1,431 @@
++#ifndef NVIDIA_CONFIG_H
++#define NVIDIA_CONFIG_H
++
++#include <linux/version.h>
++#include <generated/autoconf.h>
++
++#ifdef HAVE_CONFIG_H
++#include <config.h>
++#endif
++
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 0)
++#define NV_SET_MEMORY_ARRAY_UC_PRESENT
++#endif
++
++
++/* Determine if the remap_pfn_range() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_REMAP_PFN_RANGE_PRESENT
++#endif
++
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_SET_PAGES_UC_PRESENT
++#endif
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_SET_MEMORY_UC_PRESENT
++#endif
++
++/* Determine if the outer_cache_fns struct has flush_all member. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_OUTER_FLUSH_ALL_PRESENT
++#endif
++
++/* Determine if the change_page_attr() function is present. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_CHANGE_PAGE_ATTR_PRESENT
++#endif
++
++/* Determine if the pci_get_class() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_PCI_GET_CLASS_PRESENT
++#endif
++
++/* Determine if the pci_get_domain_bus_and_slot() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_PCI_GET_DOMAIN_BUS_AND_SLOT_PRESENT
++#endif
++
++/*
++ * Determine the number of arguments of pci_(save|restore)_state(). The explicit buffer
++ * argument is only present on 2.6.9. Assume the interface is always present.
++ */
++#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 9)
++#define NV_PCI_SAVE_STATE_ARGUMENT_COUNT 1
++#else
++#define NV_PCI_SAVE_STATE_ARGUMENT_COUNT 2
++#endif
++
++/* Determine if the vmap() function is present and how many arguments it takes. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_VMAP_PRESENT
++#define NV_VMAP_ARGUMENT_COUNT 4
++#endif
++
++
++/* Determine if the 'i2c_adapter' structure has the client_register() field. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_I2C_ADAPTER_HAS_CLIENT_REGISTER
++#endif
++
++/* Determine if the 'pm_message_t' data type is present and if it as an 'event' member. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_PM_MESSAGE_T_PRESENT
++#define NV_PM_MESSAGE_T_HAS_EVENT
++#endif
++
++/* Determine if the pci_choose_state() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_PCI_CHOOSE_STATE_PRESENT
++#endif
++
++/* Determine if the vm_insert_page() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_VM_INSERT_PAGE_PRESENT
++#endif
++
++/*
++ * Determine if the 'irq_handler_t' type is present and if it takes a 'struct ptregs *'
++ * argument.
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_IRQ_HANDLER_T_PRESENT
++#define NV_IRQ_HANDLER_T_ARGUMENT_COUNT 2
++#endif
++
++/* Determine if the 'acpi_device_ops' structure has a 'match' member. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_ACPI_DEVICE_OPS_HAS_MATCH
++#endif
++
++/* Determine the number of arguments to pass to the 'acpi_op_remove' routine. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_ACPI_DEVICE_OPS_REMOVE_ARGUMENT_COUNT 1
++#endif
++
++/* Determine if the 'acpi_device_id' structure has a 'driver_data' member. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_ACPI_DEVICE_ID_HAS_DRIVER_DATA
++#endif
++
++/* Determine if the acquire_console_sem() function is present. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_ACQUIRE_CONSOLE_SEM_PRESENT
++#endif
++
++/* Determine if the console_lock() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_CONSOLE_LOCK_PRESENT
++#endif
++
++/*
++ * Determine if the kmem_cache_create() function is present and how many arguments it
++ * takes.
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_KMEM_CACHE_CREATE_PRESENT
++#define NV_KMEM_CACHE_CREATE_ARGUMENT_COUNT 5
++#endif
++
++/* Determine if the kmem_cache_create_usercopy() function exists. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_KMEM_CACHE_CREATE_USERCOPY_PRESENT
++#endif
++
++/*
++ * Determine if the smp_call_function() function is present and how many arguments it
++ * takes.
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_SMP_CALL_FUNCTION_PRESENT
++#define NV_SMP_CALL_FUNCTION_ARGUMENT_COUNT 3
++#endif
++
++/* Determine if the on_each_cpu() function is present and how many arguments it takes. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_ON_EACH_CPU_PRESENT
++#define NV_ON_EACH_CPU_ARGUMENT_COUNT 3
++#endif
++
++/* Determine if register_cpu_notifier() is present. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_REGISTER_CPU_NOTIFIER_PRESENT
++#endif
++
++/* Determine if cpuhp_setup_state() is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_CPUHP_SETUP_STATE_PRESENT
++#endif
++
++/*
++ * Determine if the acpi_evaluate_integer() function is present and the type of its 'data'
++ * argument.
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_ACPI_EVALUATE_INTEGER_PRESENT
++typedef unsigned long long nv_acpi_integer_t;
++#endif
++
++/*
++ * Determine if the acpi_walk_namespace() function is present and how many arguments it
++ * takes.
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_ACPI_WALK_NAMESPACE_PRESENT
++#define NV_ACPI_WALK_NAMESPACE_ARGUMENT_COUNT 7
++#endif
++
++/* Determine if the ioremap_cache() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_IOREMAP_CACHE_PRESENT
++#endif
++
++/* Determine if the ioremap_nocache() function is present. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_IOREMAP_NOCACHE_PRESENT
++#endif
++
++/* Determine if the ioremap_wc() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_IOREMAP_WC_PRESENT
++#endif
++
++/* Determine if the 'proc_dir_entry' structure has an 'owner' member. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_PROC_DIR_ENTRY_HAS_OWNER
++#endif
++
++/* Determine how many arguments the INIT_WORK() macro takes. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_INIT_WORK_PRESENT
++#define NV_INIT_WORK_ARGUMENT_COUNT 2
++#endif
++
++/* Determine how many arguments pci_dma_mapping_error() takes. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_PCI_DMA_MAPPING_ERROR_PRESENT
++#define NV_PCI_DMA_MAPPING_ERROR_ARGUMENT_COUNT 2
++#endif
++
++/* Determine if the 'scatterlist' structure has a 'page_link' member. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_SCATTERLIST_HAS_PAGE_LINK
++#endif
++
++/* Determine if the pci_domain_nr() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_PCI_DOMAIN_NR_PRESENT
++#endif
++
++/*
++ * Determine if the 'file_operations' structure has 'ioctl', 'unlocked_ioctl' and
++ * 'compat_ioctl' fields.
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#undef NV_FILE_OPERATIONS_HAS_IOCTL
++#define NV_FILE_OPERATIONS_HAS_UNLOCKED_IOCTL
++#define NV_FILE_OPERATIONS_HAS_COMPAT_IOCTL
++#endif
++
++/* Determine if 'proc_ops' structure exists. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_HAVE_PROC_OPS
++#endif
++
++/* Determine if the sg_init_table() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_SG_INIT_TABLE_PRESENT
++#endif
++
++/* Determine if the struct sg_table is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_SG_TABLE_PRESENT
++#endif
++
++/*
++ * Determine if include/linux/scatterlist.h exists and which table allocation functions
++ * are present if so.
++*/
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_SG_ALLOC_TABLE_PRESENT
++#define NV_SG_ALLOC_TABLE_FROM_PAGES_PRESENT
++#endif
++
++/*
++ * Determine if the 'efi_enabled symbol' is present, or if the efi_enabled() function is
++ * present and how many arguments it takes.
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_EFI_ENABLED_PRESENT
++#define NV_EFI_ENABLED_ARGUMENT_COUNT 1
++#endif
++
++/* Determine if the DRM subsystem is usable. */
++#if defined(CONFIG_DRM) || defined(CONFIG_DRM_MODULE)
++#define NV_DRM_AVAILABLE
++#endif
++
++/* Determine if the proc_create_data() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_PROC_CREATE_DATA_PRESENT
++#endif
++
++/* Determine if the pde_data() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_PDE_DATA_PRESENT
++#endif
++
++/* Determine if the get_num_physpages() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_GET_NUM_PHYSPAGES_PRESENT
++#endif
++
++/* Determine if the proc_remove() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_PROC_REMOVE_PRESENT
++#endif
++
++/* Determine if the 'vm_operations_struct' structure has a 'fault' field. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_VM_OPERATIONS_STRUCT_HAS_FAULT
++#endif
++
++/*
++ * Determine if the 'vm_fault' structure is present. The earlier name for this struct was
++ * 'fault_data', and it was renamed to 'vm_fault'.
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_VM_FAULT_PRESENT
++#endif
++
++/*
++ * Determine if the 'vm_fault' structure has an 'address', or a 'virtual_address' field.
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_VM_FAULT_HAS_ADDRESS
++#endif
++
++/* Determine if the 'task_struct' structure has a 'cred' field. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_TASK_STRUCT_HAS_CRED
++#endif
++
++/*
++ * Determine if the 'address_space' structure has a 'tree_lock' field of type 'rwlock_t'.
++ */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_ADDRESS_SPACE_HAS_RWLOCK_TREE_LOCK
++#endif
++
++/* Determine if address_space_init_once() is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_ADDRESS_SPACE_INIT_ONCE_PRESENT
++#endif
++
++/* Determine if the kbasename() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_KBASENAME_PRESENT
++#endif
++
++/* Determine if fatal_signal_pending() is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_FATAL_SIGNAL_PENDING_PRESENT
++#endif
++
++/* Determine if the 'kuid_t' type is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_KUID_T_PRESENT
++#endif
++
++/* Determine if the pm_vt_switch_required() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_PM_VT_SWITCH_REQUIRED_PRESENT
++#endif
++
++/* Determine if the 'file' structure has a 'f_inode' field. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_FILE_HAS_INODE
++#endif
++
++/* Determine if the drm_pci_set_busid() function is present. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_DRM_PCI_SET_BUSID_PRESENT
++#endif
++
++/* Determine if the write_cr4() function is present. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_WRITE_CR4_PRESENT
++#endif
++
++/* Determine if the for_each_online_node() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_FOR_EACH_ONLINE_NODE_PRESENT
++#endif
++
++/* Determine if the node_end_pfn() function is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_NODE_END_PFN_PRESENT
++#endif
++
++/* getuser_pages() tests. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_GET_USER_PAGES_HAS_TASK_STRUCT
++#define NV_GET_USER_PAGES_HAS_WRITE_AND_FORCE_ARGS
++#endif
++
++/* get_user_pages_remote() tests. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_GET_USER_PAGES_REMOTE_PRESENT
++#undef NV_GET_USER_PAGES_REMOTE_HAS_LOCKED_ARG
++#undef NV_GET_USER_PAGES_REMOTE_HAS_WRITE_AND_FORCE_ARGS
++#endif
++
++/* Determine if drm_driver::unload() returns integer value. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_DRM_DRIVER_UNLOAD_HAS_INT_RETURN_TYPE
++#endif
++
++/* Determine if drm_get_pci_dev() is present. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_DRM_GET_PCI_DEV_PRESENT
++#endif
++
++/* Determine if drm_pci_init() is present. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_DRM_PCI_INIT_PRESENT
++#endif
++
++/* Determine if drm_legacy_pci_init() is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
++#define NV_DRM_LEGACY_PCI_INIT_PRESENT
++#endif
++
++/* Determine if the function timer_setup() is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_TIMER_SETUP_PRESENT
++#endif
++
++/* Determine if the function do_gettimeofday() is present. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#undef NV_DO_GETTIMEOFDAY_PRESENT
++#endif
++
++/* Determine if the function drm_gem_object_put_unlocked() is present. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_DRM_GEM_OBJECT_PUT_UNLOCKED_PRESENT
++#endif
++
++/* # Determine if the DRIVER_LEGACY feature bit is present. */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(0, 0, 0)
++#define NV_DRM_DRIVER_LEGACY_FEATURE_BIT_PRESENT
++#endif
++
++/* Determine whether driver feature flag DRIVER_PRIME is present. */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(0, 0, 0)
++#define NV_DRM_DRIVER_PRIME_FLAG_PRESENT
++#endif
++
++
++#endif /* NVIDIA_CONFIG_H */
+diff --recursive --unified --new-file original/nvidia_uvm_common.c updated/nvidia_uvm_common.c
+--- original/nvidia_uvm_common.c	2023-06-20 07:10:08.359284397 -0300
++++ updated/nvidia_uvm_common.c	2023-06-20 07:10:09.844313042 -0300
+@@ -355,5 +355,5 @@
+ 
+ module_init(uvm_init);
+ module_exit(uvm_exit);
+-MODULE_LICENSE("MIT");
++MODULE_LICENSE("GPL");
+ MODULE_INFO(supported, "external");
+diff --recursive --unified --new-file original/nvidia_uvm_common.h updated/nvidia_uvm_common.h
+--- original/nvidia_uvm_common.h	2023-06-20 07:10:08.318283606 -0300
++++ updated/nvidia_uvm_common.h	2023-06-20 07:10:09.539307158 -0300
+@@ -105,7 +105,7 @@
+ // Provide a short form of UUID's, typically for use in debug printing:
+ #define ABBREV_UUID(uuid) (unsigned)(uuid)
+ 
+-static int uvmlite_enabled(void)
++static inline int uvmlite_enabled(void)
+ {
+ #ifdef NVIDIA_UVM_LITE_ENABLED
+     return 1;
+@@ -114,7 +114,7 @@
+ #endif
+ }
+ 
+-static int uvmnext_enabled(void)
++static inline int uvmnext_enabled(void)
+ {
+ #ifdef NVIDIA_UVM_NEXT_ENABLED
+     return 1;
+@@ -123,7 +123,7 @@
+ #endif
+ }
+ 
+-static int rm_enabled(void)
++static inline int rm_enabled(void)
+ {
+ #ifdef NVIDIA_UVM_RM_ENABLED
+     return 1;
+diff --recursive --unified --new-file original/nvidia_uvm_linux.h updated/nvidia_uvm_linux.h
+--- original/nvidia_uvm_linux.h	2023-06-20 07:10:08.320283645 -0300
++++ updated/nvidia_uvm_linux.h	2023-06-20 07:10:09.558307525 -0300
+@@ -36,27 +36,17 @@
+ // TODO: bug 1349097: split nv-linux.h into a common portion, then include that
+ // from both here, and from the RM (approximately).
+ //
+-#include "conftest.h"
++#include "nvidia-config.h"
+ 
+ #if defined(HAVE_NV_ANDROID)
+ #include <nv-android.h>
+ #endif
+ 
+ #ifndef AUTOCONF_INCLUDED
+-#if defined(NV_GENERATED_AUTOCONF_H_PRESENT)
+ #include <generated/autoconf.h>
+-#else
+-#include <linux/autoconf.h>
+-#endif
+ #endif
+ 
+-#if defined(NV_GENERATED_UTSRELEASE_H_PRESENT)
+-  #include <generated/utsrelease.h>
+-#endif
+-
+-#if defined(NV_GENERATED_COMPILE_H_PRESENT)
+-  #include <generated/compile.h>
+-#endif
++#include <generated/compile.h>
+ 
+ #include <linux/version.h>
+ #include <linux/utsname.h>
+@@ -129,28 +119,25 @@
+  * sched.h was refactored with this commit (as part of Linux 4.11)
+  *   2017-03-03  1827adb11ad26b2290dc9fe2aaf54976b2439865
+  */
+-#if defined(NV_LINUX_SCHED_SIGNAL_H_PRESENT)
+ #include <linux/sched/signal.h>     /* task_lock(), task_unlock()       */
+-#endif
+ 
+-#if defined(NV_LINUX_SCHED_TASK_H_PRESENT)
+ #include <linux/sched/task.h>       /* task_lock(), task_unlock()       */
+-#endif
+ 
+ #include <linux/moduleparam.h>      /* module_param()                   */
++
+ #if !defined(NV_VMWARE)
+ #include <asm/tlbflush.h>           /* flush_tlb(), flush_tlb_all()     */
+ #endif
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
+ #include <asm/kmap_types.h>         /* page table entry lookup          */
++#endif
+ 
+ #include <linux/interrupt.h>        /* tasklets, interrupt helpers      */
+ #include <linux/timer.h>
+ #include <linux/time.h>             /* do_gettimeofday()*/
+ 
+ #include <asm/div64.h>              /* do_div()                         */
+-#if defined(NV_ASM_SYSTEM_H_PRESENT)
+-#include <asm/system.h>             /* cli, sli, save_flags             */
+-#endif
+ #include <asm/io.h>                 /* ioremap, virt_to_phys            */
+ #include <asm/uaccess.h>            /* access_ok                        */
+ #include <asm/page.h>               /* PAGE_OFFSET                      */
+@@ -158,8 +145,10 @@
+ 
+ #if defined(NVCPU_X86_64) && !defined(HAVE_COMPAT_IOCTL)
+ #include <linux/syscalls.h>         /* sys_ioctl()                      */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
+ #include <linux/ioctl32.h>          /* register_ioctl32_conversion()    */
+ #endif
++#endif
+ 
+ #if !defined(NV_FILE_OPERATIONS_HAS_IOCTL) && \
+   !defined(NV_FILE_OPERATIONS_HAS_UNLOCKED_IOCTL)
+@@ -172,11 +161,7 @@
+ #endif
+ 
+ #include <linux/spinlock.h>
+-#if defined(NV_LINUX_SEMAPHORE_H_PRESENT)
+ #include <linux/semaphore.h>
+-#else
+-#include <asm/semaphore.h>
+-#endif
+ #include <linux/completion.h>
+ #include <linux/highmem.h>
+ 
+@@ -194,13 +179,9 @@
+ 
+ #define NV_UVM_FENCE()   mb()
+ 
+-#if defined(NV_LINUX_PRINTK_H_PRESENT)
+ #include <linux/printk.h>
+-#endif
+ 
+-#if defined(NV_LINUX_RATELIMIT_H_PRESENT)
+ #include <linux/ratelimit.h>
+-#endif
+ 
+ #if !defined(no_printk)
+ //
+@@ -448,4 +429,3 @@
+ #endif
+ 
+ #endif // _NVIDIA_UVM_LINUX_H
+-
+diff --recursive --unified --new-file original/nvidia_uvm_lite_api.c updated/nvidia_uvm_lite_api.c
+--- original/nvidia_uvm_lite_api.c	2023-06-20 07:10:08.365284513 -0300
++++ updated/nvidia_uvm_lite_api.c	2023-06-20 07:10:09.845313062 -0300
+@@ -30,6 +30,10 @@
+ #include "uvm_gpu_ops_tests.h"
+ #endif
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
++#define mmap_sem mmap_lock
++#endif
++
+ //
+ // nvidia_uvm_lite_api.c
+ //
+diff --recursive --unified --new-file original/nvidia_uvm_lite.c updated/nvidia_uvm_lite.c
+--- original/nvidia_uvm_lite.c	2023-06-20 07:10:08.368284571 -0300
++++ updated/nvidia_uvm_lite.c	2023-06-20 07:10:09.869313524 -0300
+@@ -131,8 +131,8 @@
+ RM_STATUS _preexisting_error_on_channel(UvmGpuMigrationTracking *pMigTracker,
+                                          UvmCommitRecord *pRecord);
+ 
+-static void _set_timeout_in_usec(struct timeval *src,
+-                                 struct timeval *result,
++static void _set_timeout_in_usec(struct nv_timeval *src,
++                                 struct nv_timeval *result,
+                                  unsigned long timeoutInUsec)
+ {
+     if (!src || !result)
+@@ -820,7 +820,13 @@
+ }
+ 
+ #if defined(NV_VM_OPERATIONS_STRUCT_HAS_FAULT)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)
++vm_fault_t _fault(struct vm_fault *vmf)
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
++int _fault(struct vm_fault *vmf)
++#else
+ int _fault(struct vm_area_struct *vma, struct vm_fault *vmf)
++#endif
+ {
+ #if defined(NV_VM_FAULT_HAS_ADDRESS)
+     unsigned long vaddr = vmf->address;
+@@ -828,8 +834,15 @@
+     unsigned long vaddr = (unsigned long)vmf->virtual_address;
+ #endif
+     struct page *page = NULL;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)
++    vm_fault_t retval;
++#else
+     int retval;
+ 
++#endif
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
++   struct vm_area_struct *vma = vmf->vma;
++#endif
+     retval = _fault_common(vma, vaddr, &page, vmf->flags);
+ 
+     vmf->page = page;
+@@ -868,7 +881,13 @@
+ // it's dealing with anonymous mapping (see handle_pte_fault).
+ //
+ #if defined(NV_VM_OPERATIONS_STRUCT_HAS_FAULT)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)
++vm_fault_t _sigbus_fault(struct vm_fault *vmf)
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
++int _sigbus_fault(struct vm_fault *vmf)
++#else
+ int _sigbus_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
++#endif
+ {
+     vmf->page = NULL;
+     return VM_FAULT_SIGBUS;
+@@ -1506,9 +1525,9 @@
+         vma->vm_ops   = &uvmlite_vma_ops;
+ 
+         // Prohibit copying the vma on fork().
+-        vma->vm_flags |= VM_DONTCOPY;
++        vm_flags_set(vma, VM_DONTCOPY);
+         // Prohibt mremap() that would expand the vma.
+-        vma->vm_flags |= VM_DONTEXPAND;
++        vm_flags_set(vma, VM_DONTEXPAND);
+ 
+         // Other cases of vma modification are detected in _mmap_open().
+ 
+@@ -1527,9 +1546,9 @@
+             return -EINVAL;
+ 
+         vma->vm_ops = &counters_vma_ops;
+-        vma->vm_flags &= ~VM_MAYWRITE;
++        vm_flags_clear(vma, VM_MAYWRITE);
+         // prevent vm_insert_page from modifying the vma's flags:
+-        vma->vm_flags |= VM_MIXEDMAP;
++        vm_flags_set(vma, VM_MIXEDMAP);
+         ret = 0;
+     }
+     UVM_DBG_PRINT_RL("vma 0x%p [0x%p, 0x%p) ret %d pgoff"
+@@ -1992,9 +2011,9 @@
+ static RM_STATUS _check_ecc_errors(UvmGpuMigrationTracking *pMigTracker,
+                                     NvBool *pIsEccErrorSet)
+ {
+-    struct timeval eccErrorStartTime = {0};
+-    struct timeval eccErrorCurrentTime = {0};
+-    struct timeval eccTimeout = {0};
++    struct nv_timeval eccErrorStartTime = {0};
++    struct nv_timeval eccErrorCurrentTime = {0};
++    struct nv_timeval eccTimeout = {0};
+     NvBool bEccErrorTimeout = NV_FALSE;
+     NvBool bEccIncomingError = NV_FALSE;
+     unsigned rmInterruptSet = 0;
+@@ -2508,8 +2527,8 @@
+     // Subsequent access from userspace after the pages are unmapped will cause
+     // a SIGSEGV.
+     //
+-    vma->vm_flags &= ~(VM_READ|VM_MAYREAD);
+-    vma->vm_flags &= ~(VM_WRITE|VM_MAYWRITE);
++    vm_flags_clear(vma, VM_READ | VM_MAYREAD);
++    vm_flags_clear(vma, VM_WRITE | VM_MAYWRITE);
+ }
+ 
+ //
+@@ -2517,8 +2536,8 @@
+ //
+ static void _set_vma_accessible(struct vm_area_struct * vma)
+ {
+-    vma->vm_flags |= (VM_READ|VM_MAYREAD);
+-    vma->vm_flags |= (VM_WRITE|VM_MAYWRITE);
++    vm_flags_set(vma, VM_READ | VM_MAYREAD);
++    vm_flags_set(vma, VM_WRITE | VM_MAYWRITE);
+ }
+ 
+ //
+diff --recursive --unified --new-file original/nv-linux.h updated/nv-linux.h
+--- original/nv-linux.h	2023-06-20 07:10:08.193281195 -0300
++++ updated/nv-linux.h	2023-06-20 07:10:09.586308065 -0300
+@@ -12,33 +12,14 @@
+ #define _NV_LINUX_H_
+ 
+ #include "nv.h"
+-#include "conftest.h"
+ 
+-#if !defined(NV_VMWARE)
+-#define NV_KERNEL_NAME "Linux"
+-#else
+-#include "nv-vmware.h"
+-#endif
++#include "nvidia-config.h"
+ 
+-#if defined(HAVE_NV_ANDROID)
+-#include <nv-android.h>
+-#endif
++#define NV_KERNEL_NAME "Linux"
+ 
+-#ifndef AUTOCONF_INCLUDED
+-#if defined(NV_GENERATED_AUTOCONF_H_PRESENT)
+ #include <generated/autoconf.h>
+-#else
+-#include <linux/autoconf.h>
+-#endif
+-#endif
+-
+-#if defined(NV_GENERATED_UTSRELEASE_H_PRESENT)
+-  #include <generated/utsrelease.h>
+-#endif
+-
+-#if defined(NV_GENERATED_COMPILE_H_PRESENT)
+-  #include <generated/compile.h>
+-#endif
++#include <generated/utsrelease.h>
++#include <generated/compile.h>
+ 
+ #include <linux/version.h>
+ #include <linux/utsname.h>
+@@ -103,13 +84,8 @@
+  * sched.h was refactored with this commit (as part of Linux 4.11)
+  *   2017-03-03  1827adb11ad26b2290dc9fe2aaf54976b2439865
+  */
+-#if defined(NV_LINUX_SCHED_SIGNAL_H_PRESENT)
+ #include <linux/sched/signal.h>     /* task_lock(), task_unlock()       */
+-#endif
+-
+-#if defined(NV_LINUX_SCHED_TASK_H_PRESENT)
+ #include <linux/sched/task.h>       /* task_lock(), task_unlock()       */
+-#endif
+ 
+ /* task and signal-related items, for kernels < 4.11: */
+ #include <linux/sched.h>            /* task_lock(), task_unlock()       */
+@@ -119,16 +95,15 @@
+ #include <asm/tlbflush.h>           /* flush_tlb(), flush_tlb_all()     */
+ #include <linux/cpu.h>              /* CPU hotplug support              */
+ #endif
+-#include <asm/kmap_types.h>         /* page table entry lookup          */
++#if LINUX_VERSION_CODE	< KERNEL_VERSION(5, 11,	0)
++	#include <asm/kmap_types.h>         /* page table entry lookup          */
++#endif
+ 
+ #include <linux/pci.h>              /* pci_find_class, etc              */
+ #include <linux/interrupt.h>        /* tasklets, interrupt helpers      */
+ #include <linux/timer.h>
+ 
+ #include <asm/div64.h>              /* do_div()                         */
+-#if defined(NV_ASM_SYSTEM_H_PRESENT)
+-#include <asm/system.h>             /* cli, sli, save_flags             */
+-#endif
+ #include <asm/io.h>                 /* ioremap, virt_to_phys            */
+ #include <asm/uaccess.h>            /* access_ok                        */
+ #include <asm/page.h>               /* PAGE_OFFSET                      */
+@@ -136,8 +111,10 @@
+ 
+ #if defined(NVCPU_X86_64) && !defined(HAVE_COMPAT_IOCTL)
+ #include <linux/syscalls.h>         /* sys_ioctl()                      */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
+ #include <linux/ioctl32.h>          /* register_ioctl32_conversion()    */
+ #endif
++#endif
+ 
+ #if !defined(NV_FILE_OPERATIONS_HAS_IOCTL) && \
+   !defined(NV_FILE_OPERATIONS_HAS_UNLOCKED_IOCTL)
+@@ -158,26 +135,14 @@
+ #endif
+ 
+ #include <linux/spinlock.h>
+-#if defined(NV_LINUX_SEMAPHORE_H_PRESENT)
+ #include <linux/semaphore.h>
+-#else
+-#include <asm/semaphore.h>
+-#endif
+ #include <linux/completion.h>
+ #include <linux/highmem.h>
+ 
+ #include <linux/workqueue.h>        /* workqueue                        */
+ 
+-#if !defined(NV_VMWARE)
+-#if defined(NV_LINUX_EFI_H_PRESENT)
+ #include <linux/efi.h>              /* efi_enabled                      */
+-#endif
+-#if defined(NV_LINUX_SCREEN_INFO_H_PRESENT)
+ #include <linux/screen_info.h>      /* screen_info                      */
+-#else
+-#include <linux/tty.h>              /* screen_info                      */
+-#endif
+-#endif
+ 
+ #if !defined(CONFIG_PCI)
+ #warning "Attempting to build driver for a platform with no PCI support!"
+@@ -203,9 +168,8 @@
+         const char *, va_list);
+ #endif
+ 
+-#if defined(NV_ASM_SET_MEMORY_H_PRESENT)
+ #include <asm/set_memory.h>
+-#endif
++
+ 
+ #if defined(NV_SET_MEMORY_UC_PRESENT)
+ #undef NV_SET_PAGES_UC_PRESENT
+@@ -262,9 +226,9 @@
+ #endif
+ 
+ #ifdef CONFIG_PROC_FS
+-#include <linux/proc_fs.h>
+ #include <linux/seq_file.h>
+ #endif
++#include <linux/proc_fs.h>
+ 
+ #ifdef CONFIG_KDB
+ #include <linux/kdb.h>
+@@ -669,11 +633,19 @@
+ #  define KM_FREE_RECORD(a,b,c)
+ #endif
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
++#define NV_VMALLOC(ptr, size)                     \
++    {                                             \
++        (ptr) = __vmalloc(size, GFP_KERNEL);      \
++        VM_ALLOC_RECORD(ptr, size, "vm_vmalloc"); \
++    }
++#else
+ #define NV_VMALLOC(ptr, size)                               \
+     {                                                       \
+         (ptr) = __vmalloc(size, GFP_KERNEL, PAGE_KERNEL);   \
+         VM_ALLOC_RECORD(ptr, size, "vm_vmalloc");           \
+     }
++#endif
+ 
+ #define NV_VFREE(ptr, size)                         \
+     {                                               \
+@@ -688,11 +660,16 @@
+         VM_ALLOC_RECORD(ptr, size, "vm_ioremap"); \
+     }
+ 
++#if defined(NV_IOREMAP_NOCACHE_PRESENT)
+ #define NV_IOREMAP_NOCACHE(ptr, physaddr, size) \
+     { \
+         (ptr) = ioremap_nocache(physaddr, size); \
+         VM_ALLOC_RECORD(ptr, size, "vm_ioremap_nocache"); \
+     }
++#else
++#define NV_IOREMAP_NOCACHE(ptr, physaddr, size) \
++    NV_IOREMAP(ptr, physaddr, size)
++#endif
+ 
+ #if defined(NV_IOREMAP_CACHE_PRESENT)
+ #define NV_IOREMAP_CACHE(ptr, physaddr, size)            \
+@@ -774,6 +751,17 @@
+ #error "NV_KMEM_CACHE_CREATE() undefined (kmem_cache_create() unavailable)!"
+ #endif
+ 
++#if defined(NV_KMEM_CACHE_CREATE_USERCOPY_PRESENT)
++#define NV_KMEM_CACHE_CREATE_USERCOPY(kmem_cache, name, type)       \
++    {                                                               \
++        kmem_cache = kmem_cache_create_usercopy(name, sizeof(type), \
++                        0, 0, 0, sizeof(type), NULL);               \
++    }
++#else
++#define NV_KMEM_CACHE_CREATE_USERCOPY(kmem_cache, name, type)       \
++        NV_KMEM_CACHE_CREATE(kmem_cache, name, type)
++#endif
++
+ #define NV_KMEM_CACHE_ALLOC(ptr, kmem_cache, type)              \
+     {                                                           \
+         (ptr) = kmem_cache_alloc(kmem_cache, GFP_KERNEL);       \
+@@ -1971,6 +1959,19 @@
+     })
+ #endif
+ 
++#if defined(NV_HAVE_PROC_OPS)
++#define NV_CREATE_PROC_FILE(filename,parent,__name,__data)               \
++   ({                                                                    \
++        struct proc_dir_entry *__entry;                                  \
++        int mode = (S_IFREG | S_IRUGO);                                  \
++        const struct proc_ops *fops = &nv_procfs_##__name##_fops;        \
++        if (fops->proc_write != 0)                                       \
++            mode |= S_IWUSR;                                             \
++        __entry = NV_CREATE_PROC_ENTRY(filename, mode, parent, fops,     \
++            __data);                                                     \
++        __entry;                                                         \
++    })
++#else
+ #define NV_CREATE_PROC_FILE(filename,parent,__name,__data)               \
+    ({                                                                    \
+         struct proc_dir_entry *__entry;                                  \
+@@ -1982,6 +1983,7 @@
+             __data);                                                     \
+         __entry;                                                         \
+     })
++#endif
+ 
+ /*
+  * proc_mkdir_mode exists in Linux 2.6.9, but isn't exported until Linux 3.0.
+@@ -2010,8 +2012,12 @@
+     })
+ 
+ #if defined(NV_PDE_DATA_PRESENT)
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
+ # define NV_PDE_DATA(inode) PDE_DATA(inode)
+ #else
++# define NV_PDE_DATA(inode) pde_data(inode)
++#endif
++#else
+ # define NV_PDE_DATA(inode) PDE(inode)->data
+ #endif
+ 
+@@ -2023,6 +2029,24 @@
+     remove_proc_entry(entry->name, entry->parent);
+ #endif
+ 
++#if defined(NV_HAVE_PROC_OPS)
++#define NV_DEFINE_PROCFS_SINGLE_FILE(__name)                                  \
++    static int nv_procfs_open_##__name(                                       \
++        struct inode *inode,                                                  \
++        struct file *filep                                                    \
++    )                                                                         \
++    {                                                                         \
++        return single_open(filep, nv_procfs_read_##__name,                    \
++            NV_PDE_DATA(inode));                                              \
++    }                                                                         \
++                                                                              \
++    static const struct proc_ops nv_procfs_##__name##_fops = {                \
++        .proc_open       = nv_procfs_open_##__name,                           \
++        .proc_read       = seq_read,                                          \
++        .proc_lseek      = seq_lseek,                                         \
++        .proc_release    = single_release,                                    \
++    };
++#else
+ #define NV_DEFINE_PROCFS_SINGLE_FILE(__name)                                  \
+     static int nv_procfs_open_##__name(                                       \
+         struct inode *inode,                                                  \
+@@ -2040,6 +2064,7 @@
+         .llseek     = seq_lseek,                                              \
+         .release    = single_release,                                         \
+     };
++#endif
+ 
+ #endif  /* CONFIG_PROC_FS */
+ 
+@@ -2192,10 +2217,13 @@
+                                             pages, vmas, NULL);
+ 
+         #else
+-
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
++               return get_user_pages_remote(mm, start, nr_pages, flags,
++                                            pages, vmas, NULL);
++#else
+                return get_user_pages_remote(tsk, mm, start, nr_pages, flags,
+                                             pages, vmas);
+-
++#endif
+         #endif
+ 
+         }
+@@ -2228,4 +2256,20 @@
+     #endif
+ #endif
+ 
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
++static inline void vm_flags_set(struct vm_area_struct *vma,
++				vm_flags_t flags)
++{
++    vma->vm_flags |= flags;
++}
++
++static inline void vm_flags_clear(struct vm_area_struct *vma,
++				  vm_flags_t flags)
++{
++    vma->vm_flags &= ~flags;
++}
++#endif
++
++
+ #endif  /* _NV_LINUX_H_ */
+diff --recursive --unified --new-file original/nv-misc.h updated/nv-misc.h
+--- original/nv-misc.h	2023-06-20 07:10:08.198281292 -0300
++++ updated/nv-misc.h	2023-06-20 07:10:09.615308625 -0300
+@@ -11,6 +11,8 @@
+ #ifndef _NV_MISC_H_
+ #define _NV_MISC_H_
+ 
++#include <linux/stddef.h>
++
+ #include "nvtypes.h"
+ #include "rmretval.h"
+ 
+diff --recursive --unified --new-file original/nv-mmap.c updated/nv-mmap.c
+--- original/nv-mmap.c	2023-06-20 07:10:08.263282545 -0300
++++ updated/nv-mmap.c	2023-06-20 07:10:09.871313562 -0300
+@@ -156,8 +156,9 @@
+         case NV_MEMORY_UNCACHED_WEAK:
+ #if defined(NV_PGPROT_UNCACHED_WEAK)
+             *prot = NV_PGPROT_UNCACHED_WEAK(*prot);
+-            break;
++            return 0;
+ #endif
++
+         case NV_MEMORY_UNCACHED:
+             /*!
+              * On Tegra 3 (A9), we cannot have the device type bits set on
+@@ -167,7 +168,8 @@
+                 (nv_cpu_type == NV_CPU_TYPE_ARM_A9)) ?
+                     NV_PGPROT_UNCACHED(*prot) :
+                     NV_PGPROT_UNCACHED_DEVICE(*prot);
+-            break;
++            return 0;
++
+ #if defined(NV_PGPROT_WRITE_COMBINED) && \
+     defined(NV_PGPROT_WRITE_COMBINED_DEVICE)
+         case NV_MEMORY_WRITECOMBINED:
+@@ -181,7 +183,7 @@
+                     (nv_cpu_type != NV_CPU_TYPE_ARM_A9)) ?
+                         NV_PGPROT_WRITE_COMBINED_DEVICE(*prot) :
+                         NV_PGPROT_WRITE_COMBINED(*prot);
+-                break;
++                return 0;
+             }
+ 
+             /*
+@@ -195,16 +197,16 @@
+              */
+             return 1;
+ #endif
++
+         case NV_MEMORY_CACHED:
+             if (NV_ALLOW_CACHING(memory_type))
+-                break;
+-        default:
+-            nv_printf(NV_DBG_ERRORS,
+-                "NVRM: VM: cache type %d not supported for memory type %d!\n",
+-                cache_type, memory_type);
+-            return 1;
++                return 0;
+     }
+-    return 0;
++
++    nv_printf(NV_DBG_ERRORS,
++              "NVRM: VM: cache type %d not supported for memory type %d!\n",
++              cache_type, memory_type);
++    return 1;
+ }
+ 
+ int nvidia_mmap(
+@@ -311,8 +313,7 @@
+             status = -EAGAIN;
+             goto done;
+         }
+-
+-        vma->vm_flags |= VM_IO;
++        vm_flags_set(vma, VM_IO);
+     }
+     else
+     {
+@@ -363,8 +364,8 @@
+ 
+         NV_PRINT_AT(NV_DBG_MEMINFO, at);
+ 
+-        vma->vm_flags |= (VM_IO | VM_LOCKED | VM_RESERVED);
+-        vma->vm_flags |= (VM_DONTEXPAND | VM_DONTDUMP);
++        vm_flags_set(vma, VM_IO | VM_LOCKED | VM_RESERVED);
++        vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+     }
+ 
+     if (status == 0)
+@@ -374,8 +375,8 @@
+         if ((prot & NV_PROTECT_WRITEABLE) == 0)
+         {
+             vma->vm_page_prot = NV_PGPROT_READ_ONLY(vma->vm_page_prot);
+-            vma->vm_flags &= ~VM_WRITE;
+-            vma->vm_flags &= ~VM_MAYWRITE;
++            vm_flags_clear(vma, VM_WRITE);
++            vm_flags_clear(vma, VM_MAYWRITE);
+         }
+ 
+         vma->vm_ops = &nv_vm_ops;
+diff --recursive --unified --new-file original/nv-procfs.c updated/nv-procfs.c
+--- original/nv-procfs.c	2023-06-20 07:10:08.271282700 -0300
++++ updated/nv-procfs.c	2023-06-20 07:10:09.872313582 -0300
+@@ -16,9 +16,7 @@
+ 
+ #if defined(CONFIG_PROC_FS)
+ 
+-#include "nv_compiler.h"
+ #include "nv-reg.h"
+-#include "conftest/patches.h"
+ #include "rmil.h"
+ 
+ static const char *__README_warning = \
+@@ -409,6 +407,15 @@
+     return ((status < 0) ? status : (int)count);
+ }
+ 
++#if defined(NV_HAVE_PROC_OPS)
++static struct proc_ops nv_procfs_registry_fops = {
++    .proc_open    = nv_procfs_open_registry,
++    .proc_read    = seq_read,
++    .proc_write   = nv_procfs_write_file,
++    .proc_lseek   = seq_lseek,
++    .proc_release = nv_procfs_close_registry,
++};
++#else
+ static struct file_operations nv_procfs_registry_fops = {
+     .owner   = THIS_MODULE,
+     .open    = nv_procfs_open_registry,
+@@ -417,6 +424,7 @@
+     .llseek  = seq_lseek,
+     .release = nv_procfs_close_registry,
+ };
++#endif
+ 
+ static int
+ nv_procfs_read_unbind_lock(
+@@ -538,6 +546,15 @@
+     return rc;
+ }
+ 
++#if defined(NV_HAVE_PROC_OPS)
++static struct proc_ops nv_procfs_unbind_lock_fops = {
++    .proc_open    = nv_procfs_open_unbind_lock,
++    .proc_read    = seq_read,
++    .proc_write   = nv_procfs_write_file,
++    .proc_lseek   = seq_lseek,
++    .proc_release = nv_procfs_close_unbind_lock,
++};
++#else
+ static struct file_operations nv_procfs_unbind_lock_fops = {
+     .owner   = THIS_MODULE,
+     .open    = nv_procfs_open_unbind_lock,
+@@ -546,6 +563,7 @@
+     .llseek  = seq_lseek,
+     .release = nv_procfs_close_unbind_lock,
+ };
++#endif
+ 
+ static int
+ nv_procfs_read_text_file(
+@@ -601,7 +619,6 @@
+ int nv_register_procfs(void)
+ {
+ #if defined(CONFIG_PROC_FS)
+-    NvU32 i = 0;
+     char nv_dir_name[20];
+     struct proc_dir_entry *entry;
+ 
+@@ -636,11 +653,13 @@
+     if (!proc_nvidia_patches)
+         goto failed;
+ 
+-    for (i = 0; __nv_patches[i].short_description; i++)
++#ifdef NV_ENABLE_PATCHES
++    for (int i = 0; __nv_patches[i].short_description; i++)
+     {
+         nv_procfs_add_text_file(proc_nvidia_patches,
+             __nv_patches[i].short_description, __nv_patches[i].description);
+     }
++#endif
+ 
+     nv_procfs_add_text_file(proc_nvidia_patches, "README", __README_patches);
+ 
+diff --recursive --unified --new-file original/nv-time.h updated/nv-time.h
+--- original/nv-time.h	2023-06-20 07:10:08.212281562 -0300
++++ updated/nv-time.h	2023-06-20 07:10:09.670309686 -0300
+@@ -24,11 +24,14 @@
+ #define __NV_TIME_H__
+ 
+ #include <linux/time.h>
+-#if defined(NV_LINUX_KTIME_H_PRESENT)
+ #include <linux/ktime.h>
+-#endif
+ 
+-static inline void nv_gettimeofday(struct timeval *tv)
++struct nv_timeval {
++    __kernel_long_t      tv_sec;
++    __kernel_suseconds_t tv_usec;
++};
++
++static inline void nv_gettimeofday(struct nv_timeval *tv)
+ {
+ #ifdef NV_DO_GETTIMEOFDAY_PRESENT
+     do_gettimeofday(tv);
+@@ -37,7 +40,7 @@
+ 
+     ktime_get_real_ts64(&now);
+ 
+-    *tv = (struct timeval) {
++    *tv = (struct nv_timeval) {
+         .tv_sec = now.tv_sec,
+         .tv_usec = now.tv_nsec/1000,
+     };
+diff --recursive --unified --new-file original/nv-vm.c updated/nv-vm.c
+--- original/nv-vm.c	2023-06-20 07:10:08.279282854 -0300
++++ updated/nv-vm.c	2023-06-20 07:10:09.903314181 -0300
+@@ -169,12 +169,20 @@
+ 
+ static inline int nv_map_sg(struct pci_dev *dev, struct scatterlist *sg)
+ {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
++    return dma_map_sg(&dev->dev, sg, 1, DMA_BIDIRECTIONAL);
++#else
+     return pci_map_sg(dev, sg, 1, PCI_DMA_BIDIRECTIONAL);
++#endif
+ }
+ 
+ static inline void nv_unmap_sg(struct pci_dev *dev, struct scatterlist *sg)
+ {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0)
++    dma_unmap_sg(&dev->dev, sg, 1, DMA_BIDIRECTIONAL);
++#else
+     pci_unmap_sg(dev, sg, 1, PCI_DMA_BIDIRECTIONAL);
++#endif
+ }
+ 
+ #define NV_MAP_SG_MAX_RETRIES 16
+diff --recursive --unified --new-file original/os-interface.c updated/os-interface.c
+--- original/os-interface.c	2023-06-20 07:10:08.285282970 -0300
++++ updated/os-interface.c	2023-06-20 07:10:09.903314181 -0300
+@@ -439,7 +439,7 @@
+     NvU32 *useconds
+ )
+ {
+-    struct timeval tm;
++    struct nv_timeval tm;
+ 
+     nv_gettimeofday(&tm);
+ 
+@@ -474,7 +474,7 @@
+     unsigned long usec;
+ 
+ #ifdef NV_CHECK_DELAY_ACCURACY
+-    struct timeval tm1, tm2;
++    struct nv_timeval tm1, tm2;
+ 
+     nv_gettimeofday(&tm1);
+ #endif
+@@ -514,9 +514,9 @@
+     unsigned long MicroSeconds;
+     unsigned long jiffies;
+     unsigned long mdelay_safe_msec;
+-    struct timeval tm_end, tm_aux;
++    struct nv_timeval tm_end, tm_aux;
+ #ifdef NV_CHECK_DELAY_ACCURACY
+-    struct timeval tm_start;
++    struct nv_timeval tm_start;
+ #endif
+ 
+     nv_gettimeofday(&tm_aux);
+@@ -549,7 +549,11 @@
+         // the requested timeout has expired, loop until less
+         // than a jiffie of the desired delay remains.
+         //
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
++        current->__state = TASK_INTERRUPTIBLE;
++#else
+         current->state = TASK_INTERRUPTIBLE;
++#endif
+         do
+         {
+             schedule_timeout(jiffies);
+diff --recursive --unified --new-file original/os-interface.h updated/os-interface.h
+--- original/os-interface.h	2023-06-20 07:10:08.220281716 -0300
++++ updated/os-interface.h	2023-06-20 07:10:09.729310823 -0300
+@@ -24,7 +24,12 @@
+ *                                                                           *
+ \***************************************************************************/
+ 
++#include <linux/version.h>
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 16, 0)
++#include <linux/stdarg.h>
++#else
+ #include <stdarg.h>
++#endif
+ 
+ /*
+  * Define away Microsoft compiler extensions when possible
+diff --recursive --unified --new-file original/os-mlock.c updated/os-mlock.c
+--- original/os-mlock.c	2023-06-20 07:10:08.288283028 -0300
++++ updated/os-mlock.c	2023-06-20 07:10:09.904314200 -0300
+@@ -44,11 +44,19 @@
+         return rmStatus;
+     }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0)
++    down_read(&mm->mmap_lock);
++    ret = NV_GET_USER_PAGES((unsigned long)address,
++                            page_count, write, force, user_pages, NULL);
++    up_read(&mm->mmap_lock);
++    pinned = ret;
++#else
+     down_read(&mm->mmap_sem);
+     ret = NV_GET_USER_PAGES((unsigned long)address,
+                             page_count, write, force, user_pages, NULL);
+     up_read(&mm->mmap_sem);
+     pinned = ret;
++#endif
+ 
+     if (ret < 0)
+     {
