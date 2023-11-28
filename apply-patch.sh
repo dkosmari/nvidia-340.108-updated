@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/bin/bash -ex
 
 if [[ ! -f updated.patch ]]
 then
@@ -10,6 +10,7 @@ fi
 NV_DIR="NVIDIA-Linux-x86_64-340.108"
 rm -rf ${NV_DIR}
 if [[ ! -f NVIDIA-Linux-x86_64-340.108.run ]]
+then
    wget https://us.download.nvidia.com/XFree86/Linux-x86_64/340.108/NVIDIA-Linux-x86_64-340.108.run
 fi
 chmod +x ./NVIDIA-Linux-x86_64-340.108.run
@@ -23,5 +24,6 @@ done
 rm -rf ${NV_DIR}
 
 
-exec patch -v -p1 < updated.patch
+patch --verbose --unified -p1 < updated.patch
 
+exit 0

@@ -131,6 +131,7 @@ endif
 
 
 uninstall:
+	dkms --version >/dev/null
 	-dkms remove -m $(PACKAGE) -v $(VERSION) --all
 	$(RM) -r $(SRCTREE)/$(DISTDIR)
 
