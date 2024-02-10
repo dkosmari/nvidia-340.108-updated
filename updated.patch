@@ -1,6 +1,6 @@
 diff --recursive --unified --new-file original/nv-acpi.c updated/nv-acpi.c
---- original/nv-acpi.c	2023-11-28 20:23:52.893437206 -0300
-+++ updated/nv-acpi.c	2023-11-28 20:23:53.279443734 -0300
+--- original/nv-acpi.c	2024-02-10 07:40:49.139026332 -0300
++++ updated/nv-acpi.c	2024-02-10 07:40:49.898030620 -0300
 @@ -26,8 +26,12 @@
  #if !defined(NV_ACPI_DEVICE_OPS_REMOVE_ARGUMENT_COUNT) || (NV_ACPI_DEVICE_OPS_REMOVE_ARGUMENT_COUNT == 2)
  static int         nv_acpi_remove_two_args(struct acpi_device *device, int type);
@@ -231,8 +231,8 @@ diff --recursive --unified --new-file original/nv-acpi.c updated/nv-acpi.c
      if (lcd_dev_handle == NULL)
      {
 diff --recursive --unified --new-file original/nv.c updated/nv.c
---- original/nv.c	2023-11-28 20:23:52.897437274 -0300
-+++ updated/nv.c	2023-11-28 20:23:53.279443734 -0300
+--- original/nv.c	2024-02-10 07:40:49.142026349 -0300
++++ updated/nv.c	2024-02-10 07:40:49.898030620 -0300
 @@ -20,9 +20,7 @@
  #include "nv_uvm_interface.h"
  #endif
@@ -261,7 +261,19 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
  
  /*
   * our global state; one per device
-@@ -325,7 +323,9 @@
+@@ -66,6 +64,11 @@
+ NvU64 __nv_supported_pte_mask = ~_PAGE_NX;
+ #endif
+ 
++
++/* Workqueue for the module */
++struct workqueue_struct *nv_queue;
++
++
+ /*
+  * And one for the control device
+  */
+@@ -325,7 +328,9 @@
  static int           nvidia_close          (struct inode *, struct file *);
  static unsigned int  nvidia_poll           (struct file *, poll_table *);
  static int           nvidia_ioctl          (struct inode *, struct file *, unsigned int, unsigned long);
@@ -271,7 +283,7 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
  static void          nvidia_isr_bh         (unsigned long);
  #if !defined(NV_IRQ_HANDLER_T_PRESENT) || (NV_IRQ_HANDLER_T_ARGUMENT_COUNT == 3)
  static irqreturn_t   nvidia_isr            (int, void *, struct pt_regs *);
-@@ -710,7 +710,7 @@
+@@ -710,12 +715,16 @@
  {
      RM_STATUS status;
      int rc;
@@ -280,7 +292,16 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
      nv_state_t *nv = NV_STATE_PTR(&nv_ctl_device);
      nv_stack_t *sp = NULL;
      nv_linux_state_t *nvl;
-@@ -736,7 +736,7 @@
+     nv_smu_state_t *nv_smu = &nv_smu_device;
+ 
++    nv_queue = alloc_workqueue("nvidia_events", 0, 0);
++    if (!nv_queue)
++        return -1;
++
+     if (NV_BUILD_MODULE_INSTANCES != 0)
+     {
+         nv_printf(NV_DBG_INFO, "NVRM: nvidia module instance %d\n", 
+@@ -736,7 +745,7 @@
          goto failed4;
      }
  
@@ -289,7 +310,7 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
      status = nv_nvmap_create_client();
      if (RM_OK != status)
      {
-@@ -752,7 +752,7 @@
+@@ -752,7 +761,7 @@
      NV_SPIN_LOCK_INIT(&km_lock);
  #endif
  
@@ -298,7 +319,7 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
      if (nv_stack_t_cache == NULL)
      {
          nv_printf(NV_DBG_ERRORS, "NVRM: stack cache allocation failed!\n");
-@@ -874,7 +874,8 @@
+@@ -874,7 +883,8 @@
  
      nv_printf(NV_DBG_ERRORS, "NVRM: loading %s\n", pNVRM_ID);
  
@@ -308,7 +329,7 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
      {
          if (i == 0)
              nv_printf(NV_DBG_ERRORS, "NVRM: Applied patches:\n");
-@@ -883,6 +884,7 @@
+@@ -883,6 +893,7 @@
          nv_printf(NV_DBG_ERRORS,
              "NVRM:    Patch #%d: %s\n", i + 1, __nv_patches[i].short_description);
      }
@@ -316,7 +337,17 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
  
      // init the nvidia control device
      nv->os_state = (void *) &nv_ctl_device;
-@@ -1092,7 +1094,7 @@
+@@ -1048,6 +1059,9 @@
+     nv_mem_pool_destroy();
+     nv_heap_destroy();
+ 
++    destroy_workqueue(nv_queue);
++    nv_queue = NULL;
++
+     return rc;
+ }
+ 
+@@ -1092,7 +1106,7 @@
  
      nv_unregister_chrdev((void *)&nv_fops);
  
@@ -325,7 +356,17 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
      nv_nvmap_destroy_client();
  #endif
      // Shutdown the resource manager
-@@ -1830,6 +1832,7 @@
+@@ -1142,6 +1156,9 @@
+ 
+     nv_mem_pool_destroy();
+     nv_heap_destroy();
++
++    destroy_workqueue(nv_queue);
++    nv_queue = NULL;
+ }
+ 
+ 
+@@ -1830,6 +1847,7 @@
      return status;
  }
  
@@ -333,7 +374,7 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
  static long
  nvidia_unlocked_ioctl(
      struct file *file,
-@@ -1839,6 +1842,7 @@
+@@ -1839,6 +1857,7 @@
  {
      return nvidia_ioctl(NV_FILE_INODE(file), file, cmd, i_arg);
  }
@@ -341,7 +382,7 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
  
  /*
   * driver receives an interrupt
-@@ -1910,6 +1914,7 @@
+@@ -1910,6 +1929,7 @@
      _nvidia_rc_timer_internal(nvl);
  }
  
@@ -349,7 +390,7 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
  static void
  nvidia_rc_timer_with_anon_data(
      unsigned long data
-@@ -1918,6 +1923,7 @@
+@@ -1918,6 +1938,7 @@
      nv_linux_state_t *nvl = (nv_linux_state_t *) data;
      _nvidia_rc_timer_internal(nvl);
  }
@@ -357,7 +398,7 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
  
  /*
  ** nvidia_ctl_open
-@@ -2785,8 +2791,12 @@
+@@ -2785,8 +2806,12 @@
  
  #if defined(CONFIG_VGA_ARB)
  #if defined(VGA_DEFAULT_DEVICE)
@@ -371,8 +412,8 @@ diff --recursive --unified --new-file original/nv.c updated/nv.c
  #endif
  
 diff --recursive --unified --new-file original/nv-dma.c updated/nv-dma.c
---- original/nv-dma.c	2023-11-28 20:23:52.905437409 -0300
-+++ updated/nv-dma.c	2023-11-28 20:23:53.279443734 -0300
+--- original/nv-dma.c	2024-02-10 07:40:49.150026394 -0300
++++ updated/nv-dma.c	2024-02-10 07:40:49.908030676 -0300
 @@ -14,6 +14,7 @@
  #include "os-interface.h"
  #include "nv-linux.h"
@@ -422,8 +463,8 @@ diff --recursive --unified --new-file original/nv-dma.c updated/nv-dma.c
  
      *priv = dma_map->user_pages;
 diff --recursive --unified --new-file original/nv-drm.c updated/nv-drm.c
---- original/nv-drm.c	2023-11-28 20:23:52.908437460 -0300
-+++ updated/nv-drm.c	2023-11-28 20:23:53.279443734 -0300
+--- original/nv-drm.c	2024-02-10 07:40:49.152026406 -0300
++++ updated/nv-drm.c	2024-02-10 07:40:49.928030789 -0300
 @@ -16,43 +16,298 @@
  
  #if defined(NV_DRM_AVAILABLE)
@@ -903,8 +944,8 @@ diff --recursive --unified --new-file original/nv-drm.c updated/nv-drm.c
      status = RM_OK;
  
 diff --recursive --unified --new-file original/nv-frontend.c updated/nv-frontend.c
---- original/nv-frontend.c	2023-11-28 20:23:52.910437494 -0300
-+++ updated/nv-frontend.c	2023-11-28 20:23:53.280443751 -0300
+--- original/nv-frontend.c	2024-02-10 07:40:49.154026417 -0300
++++ updated/nv-frontend.c	2024-02-10 07:40:49.940030857 -0300
 @@ -15,7 +15,7 @@
  #include "nv-frontend.h"
  
@@ -915,8 +956,8 @@ diff --recursive --unified --new-file original/nv-frontend.c updated/nv-frontend
  #if defined(MODULE_INFO)
  MODULE_INFO(supported, "external");
 diff --recursive --unified --new-file original/nv.h updated/nv.h
---- original/nv.h	2023-11-28 20:23:52.847436426 -0300
-+++ updated/nv.h	2023-11-28 20:23:53.231442924 -0300
+--- original/nv.h	2024-02-10 07:40:49.098026100 -0300
++++ updated/nv.h	2024-02-10 07:40:49.596028913 -0300
 @@ -13,7 +13,12 @@
  #define _NV_H_
  
@@ -932,7 +973,7 @@ diff --recursive --unified --new-file original/nv.h updated/nv.h
  #define NV_MIN(_a,_b) ((_a) < (_b) ? (_a) : (_b))
 diff --recursive --unified --new-file original/nvidia-config.h updated/nvidia-config.h
 --- original/nvidia-config.h	1969-12-31 21:00:00.000000000 -0300
-+++ updated/nvidia-config.h	2023-11-28 20:23:53.231442924 -0300
++++ updated/nvidia-config.h	2024-02-10 07:40:49.616029027 -0300
 @@ -0,0 +1,431 @@
 +#ifndef NVIDIA_CONFIG_H
 +#define NVIDIA_CONFIG_H
@@ -1366,8 +1407,8 @@ diff --recursive --unified --new-file original/nvidia-config.h updated/nvidia-co
 +
 +#endif /* NVIDIA_CONFIG_H */
 diff --recursive --unified --new-file original/nvidia_uvm_common.c updated/nvidia_uvm_common.c
---- original/nvidia_uvm_common.c	2023-11-28 20:23:53.026439460 -0300
-+++ updated/nvidia_uvm_common.c	2023-11-28 20:23:53.280443751 -0300
+--- original/nvidia_uvm_common.c	2024-02-10 07:40:49.264027038 -0300
++++ updated/nvidia_uvm_common.c	2024-02-10 07:40:49.942030868 -0300
 @@ -355,5 +355,5 @@
  
  module_init(uvm_init);
@@ -1376,8 +1417,8 @@ diff --recursive --unified --new-file original/nvidia_uvm_common.c updated/nvidi
 +MODULE_LICENSE("GPL");
  MODULE_INFO(supported, "external");
 diff --recursive --unified --new-file original/nvidia_uvm_common.h updated/nvidia_uvm_common.h
---- original/nvidia_uvm_common.h	2023-11-28 20:23:52.978438647 -0300
-+++ updated/nvidia_uvm_common.h	2023-11-28 20:23:53.231442924 -0300
+--- original/nvidia_uvm_common.h	2024-02-10 07:40:49.220026790 -0300
++++ updated/nvidia_uvm_common.h	2024-02-10 07:40:49.632029117 -0300
 @@ -105,7 +105,7 @@
  // Provide a short form of UUID's, typically for use in debug printing:
  #define ABBREV_UUID(uuid) (unsigned)(uuid)
@@ -1406,8 +1447,8 @@ diff --recursive --unified --new-file original/nvidia_uvm_common.h updated/nvidi
  #ifdef NVIDIA_UVM_RM_ENABLED
      return 1;
 diff --recursive --unified --new-file original/nvidia_uvm_linux.h updated/nvidia_uvm_linux.h
---- original/nvidia_uvm_linux.h	2023-11-28 20:23:52.981438698 -0300
-+++ updated/nvidia_uvm_linux.h	2023-11-28 20:23:53.232442941 -0300
+--- original/nvidia_uvm_linux.h	2024-02-10 07:40:49.223026807 -0300
++++ updated/nvidia_uvm_linux.h	2024-02-10 07:40:49.660029275 -0300
 @@ -36,27 +36,17 @@
  // TODO: bug 1349097: split nv-linux.h into a common portion, then include that
  // from both here, and from the RM (approximately).
@@ -1514,8 +1555,8 @@ diff --recursive --unified --new-file original/nvidia_uvm_linux.h updated/nvidia
  #endif // _NVIDIA_UVM_LINUX_H
 -
 diff --recursive --unified --new-file original/nvidia_uvm_lite_api.c updated/nvidia_uvm_lite_api.c
---- original/nvidia_uvm_lite_api.c	2023-11-28 20:23:53.032439561 -0300
-+++ updated/nvidia_uvm_lite_api.c	2023-11-28 20:23:53.280443751 -0300
+--- original/nvidia_uvm_lite_api.c	2024-02-10 07:40:49.270027072 -0300
++++ updated/nvidia_uvm_lite_api.c	2024-02-10 07:40:49.943030874 -0300
 @@ -30,6 +30,10 @@
  #include "uvm_gpu_ops_tests.h"
  #endif
@@ -1528,8 +1569,8 @@ diff --recursive --unified --new-file original/nvidia_uvm_lite_api.c updated/nvi
  // nvidia_uvm_lite_api.c
  //
 diff --recursive --unified --new-file original/nvidia_uvm_lite.c updated/nvidia_uvm_lite.c
---- original/nvidia_uvm_lite.c	2023-11-28 20:23:53.036439629 -0300
-+++ updated/nvidia_uvm_lite.c	2023-11-28 20:23:53.281443768 -0300
+--- original/nvidia_uvm_lite.c	2024-02-10 07:40:49.273027089 -0300
++++ updated/nvidia_uvm_lite.c	2024-02-10 07:40:49.960030970 -0300
 @@ -131,8 +131,8 @@
  RM_STATUS _preexisting_error_on_channel(UvmGpuMigrationTracking *pMigTracker,
                                           UvmCommitRecord *pRecord);
@@ -1645,8 +1686,8 @@ diff --recursive --unified --new-file original/nvidia_uvm_lite.c updated/nvidia_
  
  //
 diff --recursive --unified --new-file original/nv-linux.h updated/nv-linux.h
---- original/nv-linux.h	2023-11-28 20:23:52.850436477 -0300
-+++ updated/nv-linux.h	2023-11-28 20:23:53.233442957 -0300
+--- original/nv-linux.h	2024-02-10 07:40:49.101026118 -0300
++++ updated/nv-linux.h	2024-02-10 07:40:49.678029377 -0300
 @@ -12,33 +12,14 @@
  #define _NV_LINUX_H_
  
@@ -1834,7 +1875,77 @@ diff --recursive --unified --new-file original/nv-linux.h updated/nv-linux.h
  #define NV_KMEM_CACHE_ALLOC(ptr, kmem_cache, type)              \
      {                                                           \
          (ptr) = kmem_cache_alloc(kmem_cache, GFP_KERNEL);       \
-@@ -1971,6 +1959,19 @@
+@@ -1685,25 +1673,29 @@
+     void *data;
+ } nv_work_t;
+ 
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
++
+ #define NV_TASKQUEUE_SCHEDULE(work) schedule_work(work)
+-#define NV_TASKQUEUE_FLUSH()                           \
++#define NV_TASKQUEUE_FLUSH()                    \
+     flush_scheduled_work();
++/* TODO: check when __WORK_INITIALIZER() changed from 3 to 2 arguments */
+ #if (NV_INIT_WORK_ARGUMENT_COUNT == 2)
+-#define NV_TASKQUEUE_INIT(tq,handler,data)             \
+-    {                                                  \
+-        struct work_struct __work =                    \
+-            __WORK_INITIALIZER(*(tq), handler);        \
+-        *(tq) = __work;                                \
++#define NV_TASKQUEUE_INIT(tq,handler,data)      \
++    {                                           \
++        struct work_struct __work =             \
++            __WORK_INITIALIZER(*(tq), handler); \
++        *(tq) = __work;                         \
+     }
+ #define NV_TASKQUEUE_DATA_T nv_task_t
+-#define NV_TASKQUEUE_UNPACK_DATA(tq)                   \
++#define NV_TASKQUEUE_UNPACK_DATA(tq)            \
+     container_of((tq), nv_work_t, task)
+ #elif (NV_INIT_WORK_ARGUMENT_COUNT == 3)
+-#define NV_TASKQUEUE_INIT(tq,handler,data)             \
+-    {                                                  \
+-        struct work_struct __work =                    \
+-            __WORK_INITIALIZER(*(tq), handler, data);  \
+-        *(tq) = __work;                                \
++#define NV_TASKQUEUE_INIT(tq,handler,data)              \
++    {                                                   \
++        struct work_struct __work =                     \
++            __WORK_INITIALIZER(*(tq), handler, data);   \
++        *(tq) = __work;                                 \
+     }
+ #define NV_TASKQUEUE_DATA_T void
+ #define NV_TASKQUEUE_UNPACK_DATA(tq) (nv_work_t *)(tq)
+@@ -1711,6 +1703,27 @@
+ #error "NV_INIT_WORK_ARGUMENT_COUNT value unrecognized!"
+ #endif
+ 
++#else // kernel >= 6.6.0
++
++/* Here we use a module work queue instead of the global one. */
++
++extern struct workqueue_struct *nv_queue;
++
++#define NV_TASKQUEUE_SCHEDULE(work) queue_work(nv_queue, work)
++#define NV_TASKQUEUE_FLUSH()                    \
++    flush_workqueue(nv_queue);
++#define NV_TASKQUEUE_INIT(tq,handler,data)      \
++    {                                           \
++        struct work_struct __work =             \
++            __WORK_INITIALIZER(*(tq), handler); \
++        *(tq) = __work;                         \
++    }
++#define NV_TASKQUEUE_DATA_T nv_task_t
++#define NV_TASKQUEUE_UNPACK_DATA(tq) container_of((tq), nv_work_t, task)
++
++#endif
++
++
+ #define NV_MAX_REGISTRY_KEYS_LENGTH   512
+ 
+ /* linux-specific version of old nv_state_t */
+@@ -1971,6 +1984,19 @@
      })
  #endif
  
@@ -1854,7 +1965,7 @@ diff --recursive --unified --new-file original/nv-linux.h updated/nv-linux.h
  #define NV_CREATE_PROC_FILE(filename,parent,__name,__data)               \
     ({                                                                    \
          struct proc_dir_entry *__entry;                                  \
-@@ -1982,6 +1983,7 @@
+@@ -1982,6 +2008,7 @@
              __data);                                                     \
          __entry;                                                         \
      })
@@ -1862,7 +1973,7 @@ diff --recursive --unified --new-file original/nv-linux.h updated/nv-linux.h
  
  /*
   * proc_mkdir_mode exists in Linux 2.6.9, but isn't exported until Linux 3.0.
-@@ -2010,8 +2012,12 @@
+@@ -2010,8 +2037,12 @@
      })
  
  #if defined(NV_PDE_DATA_PRESENT)
@@ -1875,7 +1986,7 @@ diff --recursive --unified --new-file original/nv-linux.h updated/nv-linux.h
  # define NV_PDE_DATA(inode) PDE(inode)->data
  #endif
  
-@@ -2023,6 +2029,24 @@
+@@ -2023,6 +2054,24 @@
      remove_proc_entry(entry->name, entry->parent);
  #endif
  
@@ -1900,7 +2011,7 @@ diff --recursive --unified --new-file original/nv-linux.h updated/nv-linux.h
  #define NV_DEFINE_PROCFS_SINGLE_FILE(__name)                                  \
      static int nv_procfs_open_##__name(                                       \
          struct inode *inode,                                                  \
-@@ -2040,6 +2064,7 @@
+@@ -2040,6 +2089,7 @@
          .llseek     = seq_lseek,                                              \
          .release    = single_release,                                         \
      };
@@ -1908,7 +2019,7 @@ diff --recursive --unified --new-file original/nv-linux.h updated/nv-linux.h
  
  #endif  /* CONFIG_PROC_FS */
  
-@@ -2140,7 +2165,11 @@
+@@ -2140,7 +2190,11 @@
              if (force)
                  flags |= FOLL_FORCE;
  
@@ -1920,7 +2031,7 @@ diff --recursive --unified --new-file original/nv-linux.h updated/nv-linux.h
          }
      #endif
  #endif
-@@ -2192,10 +2221,16 @@
+@@ -2192,10 +2246,16 @@
                                              pages, vmas, NULL);
  
          #else
@@ -1939,7 +2050,7 @@ diff --recursive --unified --new-file original/nv-linux.h updated/nv-linux.h
          #endif
  
          }
-@@ -2228,4 +2263,20 @@
+@@ -2228,4 +2288,20 @@
      #endif
  #endif
  
@@ -1961,8 +2072,8 @@ diff --recursive --unified --new-file original/nv-linux.h updated/nv-linux.h
 +
  #endif  /* _NV_LINUX_H_ */
 diff --recursive --unified --new-file original/nv-misc.h updated/nv-misc.h
---- original/nv-misc.h	2023-11-28 20:23:52.855436561 -0300
-+++ updated/nv-misc.h	2023-11-28 20:23:53.251443261 -0300
+--- original/nv-misc.h	2024-02-10 07:40:49.107026151 -0300
++++ updated/nv-misc.h	2024-02-10 07:40:49.730029670 -0300
 @@ -11,6 +11,8 @@
  #ifndef _NV_MISC_H_
  #define _NV_MISC_H_
@@ -1973,8 +2084,8 @@ diff --recursive --unified --new-file original/nv-misc.h updated/nv-misc.h
  #include "rmretval.h"
  
 diff --recursive --unified --new-file original/nv-mmap.c updated/nv-mmap.c
---- original/nv-mmap.c	2023-11-28 20:23:52.920437664 -0300
-+++ updated/nv-mmap.c	2023-11-28 20:23:53.281443768 -0300
+--- original/nv-mmap.c	2024-02-10 07:40:49.164026473 -0300
++++ updated/nv-mmap.c	2024-02-10 07:40:49.962030981 -0300
 @@ -156,8 +156,9 @@
          case NV_MEMORY_UNCACHED_WEAK:
  #if defined(NV_PGPROT_UNCACHED_WEAK)
@@ -2062,8 +2173,8 @@ diff --recursive --unified --new-file original/nv-mmap.c updated/nv-mmap.c
  
          vma->vm_ops = &nv_vm_ops;
 diff --recursive --unified --new-file original/nv-procfs.c updated/nv-procfs.c
---- original/nv-procfs.c	2023-11-28 20:23:52.929437816 -0300
-+++ updated/nv-procfs.c	2023-11-28 20:23:53.282443785 -0300
+--- original/nv-procfs.c	2024-02-10 07:40:49.172026518 -0300
++++ updated/nv-procfs.c	2024-02-10 07:40:49.964030993 -0300
 @@ -16,9 +16,7 @@
  
  #if defined(CONFIG_PROC_FS)
@@ -2146,8 +2257,8 @@ diff --recursive --unified --new-file original/nv-procfs.c updated/nv-procfs.c
      nv_procfs_add_text_file(proc_nvidia_patches, "README", __README_patches);
  
 diff --recursive --unified --new-file original/nv-time.h updated/nv-time.h
---- original/nv-time.h	2023-11-28 20:23:52.871436833 -0300
-+++ updated/nv-time.h	2023-11-28 20:23:53.252443278 -0300
+--- original/nv-time.h	2024-02-10 07:40:49.119026219 -0300
++++ updated/nv-time.h	2024-02-10 07:40:49.791030015 -0300
 @@ -24,11 +24,14 @@
  #define __NV_TIME_H__
  
@@ -2176,8 +2287,8 @@ diff --recursive --unified --new-file original/nv-time.h updated/nv-time.h
          .tv_usec = now.tv_nsec/1000,
      };
 diff --recursive --unified --new-file original/nv-vm.c updated/nv-vm.c
---- original/nv-vm.c	2023-11-28 20:23:52.938437969 -0300
-+++ updated/nv-vm.c	2023-11-28 20:23:53.282443785 -0300
+--- original/nv-vm.c	2024-02-10 07:40:49.180026564 -0300
++++ updated/nv-vm.c	2024-02-10 07:40:49.965030998 -0300
 @@ -169,12 +169,20 @@
  
  static inline int nv_map_sg(struct pci_dev *dev, struct scatterlist *sg)
@@ -2200,8 +2311,8 @@ diff --recursive --unified --new-file original/nv-vm.c updated/nv-vm.c
  
  #define NV_MAP_SG_MAX_RETRIES 16
 diff --recursive --unified --new-file original/os-interface.c updated/os-interface.c
---- original/os-interface.c	2023-11-28 20:23:52.944438071 -0300
-+++ updated/os-interface.c	2023-11-28 20:23:53.282443785 -0300
+--- original/os-interface.c	2024-02-10 07:40:49.186026598 -0300
++++ updated/os-interface.c	2024-02-10 07:40:50.010031252 -0300
 @@ -439,7 +439,7 @@
      NvU32 *useconds
  )
@@ -2245,8 +2356,8 @@ diff --recursive --unified --new-file original/os-interface.c updated/os-interfa
          {
              schedule_timeout(jiffies);
 diff --recursive --unified --new-file original/os-interface.h updated/os-interface.h
---- original/os-interface.h	2023-11-28 20:23:52.879436968 -0300
-+++ updated/os-interface.h	2023-11-28 20:23:53.252443278 -0300
+--- original/os-interface.h	2024-02-10 07:40:49.126026259 -0300
++++ updated/os-interface.h	2024-02-10 07:40:49.843030309 -0300
 @@ -24,7 +24,12 @@
  *                                                                           *
  \***************************************************************************/
@@ -2261,8 +2372,8 @@ diff --recursive --unified --new-file original/os-interface.h updated/os-interfa
  /*
   * Define away Microsoft compiler extensions when possible
 diff --recursive --unified --new-file original/os-mlock.c updated/os-mlock.c
---- original/os-mlock.c	2023-11-28 20:23:52.946438105 -0300
-+++ updated/os-mlock.c	2023-11-28 20:23:53.283443802 -0300
+--- original/os-mlock.c	2024-02-10 07:40:49.188026609 -0300
++++ updated/os-mlock.c	2024-02-10 07:40:50.010031252 -0300
 @@ -44,11 +44,19 @@
          return rmStatus;
      }
